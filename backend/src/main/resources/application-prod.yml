@@ -7,4 +7,4 @@ spring:
       client:
         registration:
           google:
-            redirect-uri: https://popspot-team07.duckdns.org/oauth2/callback/google
+            redirect-uri: https://popspot-sat7312.duckdns.org/oauth2/callback/google
