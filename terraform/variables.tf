@@ -9,18 +9,23 @@ variable "aws_region" {
 }
 
 variable "project_name" {
-  description = "리소스 네이밍에 사용할 prefix (예: 7sungsa-vpc, 7sungsa-ec2 ...)"
+  description = "리소스 네이밍에 사용할 프로젝트명"
   type        = string
-  default     = "team07"
+  default     = "popspot"
+}
+
+variable "environment" {
+  description = "리소스 네이밍과 태그에 사용할 배포 환경"
+  type        = string
+  default     = "test"
 }
 
 variable "common_tags" {
-  description = "모든 리소스에 공통으로 부여할 태그"
+  description = "모든 리소스에 공통으로 부여할 추가 태그 (Project와 Environment는 자동 설정)"
   type        = map(string)
   default = {
-    Project = "popspot"
-    Team    = "devcos-team07"
-    Manager = "infra"
+    Team  = "team07"
+    Owner = "master"
   }
 }
 
@@ -59,7 +64,7 @@ variable "ec2_instance_type" {
 variable "key_pair_name" {
   description = "콘솔에서 미리 생성한 키페어 이름 (Private Key는 Terraform/state에 남기지 않음)"
   type        = string
-  default     = "7sungsa-key"
+  default     = "popspot-key"
 }
 
 variable "ssh_allowed_cidr" {
@@ -105,7 +110,7 @@ variable "db_name" {
 variable "db_username" {
   description = "DB 마스터 유저명 (영문 시작, 16자 이하 - RDS 제약 충족)"
   type        = string
-  default     = "popspot_7sungsa"
+  default     = "popspot_admin"
 }
 
 variable "db_password" {
@@ -121,11 +126,10 @@ variable "db_password" {
 variable "s3_bucket_name" {
   description = "굿즈/팝업 이미지 저장용 S3 버킷 이름 (전역 유니크 필요, Private 버킷 + Pre-signed URL)"
   type        = string
-  default     = "7sungsa-bucket-popup-images"
 }
 
 variable "s3_cors_allowed_origins" {
   description = "S3 CORS 허용 Origin 목록 (Presigned PUT preflight 허용 대상)"
   type        = list(string)
-  default     = ["https://nbe-9-11-final-team07.vercel.app", "http://localhost:3000"]
+  default     = ["https://popspot-gilt.vercel.app", "http://localhost:3000"]
 }

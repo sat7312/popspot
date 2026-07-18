@@ -93,8 +93,8 @@ public class SecurityConfig {
 		CorsConfiguration config = new CorsConfiguration();
 		config.setAllowedOriginPatterns(List.of(
 				"http://localhost:3000",
-				"https://nbe-9-11-final-team07.vercel.app",
-				"https://nbe-9-11-final-team07-*.vercel.app"
+				"https://popspot-gilt.vercel.app",
+				"https://popspot-gilt-*.vercel.app"
 		));
 		config.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
 		config.setAllowedHeaders(List.of("*"));

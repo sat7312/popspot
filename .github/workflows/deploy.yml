@@ -9,6 +9,9 @@ jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
 
+    env:
+      IMAGE_NAME: ghcr.io/sat7312/popspot
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -29,7 +32,7 @@ jobs:
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
-          username: ${{ github.actor }}
+          username: ${{ secrets.GHCR_USERNAME }}
           password: ${{ secrets.GHCR_TOKEN }}
 
       - name: Build and push Docker image
@@ -38,7 +41,7 @@ jobs:
           context: .
           platforms: linux/amd64
           push: true
-          tags: ghcr.io/jonguk-jeong/popspot:latest
+          tags: ${{ env.IMAGE_NAME }}:latest
 
       - name: Deploy to EC2
         uses: appleboy/ssh-action@v1
@@ -47,8 +50,8 @@ jobs:
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
-            echo ${{ secrets.GHCR_TOKEN }} | docker login ghcr.io -u jonguk-jeong --password-stdin
-            docker pull ghcr.io/jonguk-jeong/popspot:latest
+            echo ${{ secrets.GHCR_TOKEN }} | docker login ghcr.io -u ${{ secrets.GHCR_USERNAME }} --password-stdin
+            docker pull ${{ env.IMAGE_NAME }}:latest
 
             BLUE_RUNNING=$(docker ps -q --filter "name=popspot-blue")
 
@@ -68,7 +71,7 @@ jobs:
               -p $TARGET_PORT:8080 \
               --link redis:redis \
               --env-file ~/popspot/backend.env \
-              ghcr.io/jonguk-jeong/popspot:latest
+              ${{ env.IMAGE_NAME }}:latest
 
             for i in $(seq 1 12); do
               STATUS=$(curl -s http://localhost:$TARGET_PORT/actuator/health | grep -o '"status":"UP"')

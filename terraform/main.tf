@@ -1,5 +1,13 @@
 terraform {
-  required_version = ">= 1.5"
+  required_version = ">= 1.10"
+
+  backend "s3" {
+    bucket       = "popspot-terraform-state-969693746592-ap-northeast-2-an"
+    key          = "popspot/test/terraform.tfstate"
+    region       = "ap-northeast-2"
+    encrypt      = true
+    use_lockfile = true
+  }
 
   required_providers {
     aws = {
@@ -11,6 +19,14 @@ terraform {
 
 provider "aws" {
   region = var.aws_region
+}
+
+locals {
+  name_prefix = "${var.project_name}-${var.environment}"
+  resource_tags = merge(var.common_tags, {
+    Project     = var.project_name
+    Environment = var.environment
+  })
 }
 
 # ─── AMI ─────────────────────────────────────────────────────────────────────
@@ -37,7 +53,7 @@ resource "aws_vpc" "main" {
   enable_dns_support   = true
   enable_dns_hostnames = true
 
-  tags = merge(var.common_tags, { Name = "${var.project_name}-vpc" })
+  tags = merge(local.resource_tags, { Name = "${local.name_prefix}-vpc" })
 }
 
 # ─── Internet Gateway ────────────────────────────────────────────────────────
@@ -45,7 +61,7 @@ resource "aws_vpc" "main" {
 resource "aws_internet_gateway" "main" {
   vpc_id = aws_vpc.main.id
 
-  tags = merge(var.common_tags, { Name = "${var.project_name}-igw" })
+  tags = merge(local.resource_tags, { Name = "${local.name_prefix}-igw" })
 }
 
 # ─── Public Subnets ──────────────────────────────────────────────────────────
@@ -58,7 +74,7 @@ resource "aws_subnet" "public" {
   availability_zone       = var.availability_zones[count.index]
   map_public_ip_on_launch = true
 
-  tags = merge(var.common_tags, { Name = "${var.project_name}-public-subnet-${count.index + 1}" })
+  tags = merge(local.resource_tags, { Name = "${local.name_prefix}-public-subnet-${count.index + 1}" })
 }
 
 # ─── Route Table ─────────────────────────────────────────────────────────────
@@ -71,7 +87,7 @@ resource "aws_route_table" "public" {
     gateway_id = aws_internet_gateway.main.id
   }
 
-  tags = merge(var.common_tags, { Name = "${var.project_name}-public-rt" })
+  tags = merge(local.resource_tags, { Name = "${local.name_prefix}-public-rt" })
 }
 
 resource "aws_route_table_association" "public" {
@@ -84,7 +100,7 @@ resource "aws_route_table_association" "public" {
 # ─── EC2 Security Group ───────────────────────────────────────────────────────
 
 resource "aws_security_group" "ec2" {
-  name        = "7sungsa-ec2-sg"
+  name        = "${local.name_prefix}-ec2-sg"
   description = "Security group for EC2 instance"
   vpc_id      = aws_vpc.main.id
 
@@ -126,13 +142,13 @@ resource "aws_security_group" "ec2" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  tags = merge(var.common_tags, { Name = "${var.project_name}-ec2-sg" })
+  tags = merge(local.resource_tags, { Name = "${local.name_prefix}-ec2-sg" })
 }
 
 # ─── RDS Security Group ───────────────────────────────────────────────────────
 
 resource "aws_security_group" "rds" {
-  name        = "7sungsa-rds-sg"
+  name        = "${local.name_prefix}-rds-sg"
   description = "Security group for RDS instance"
   vpc_id      = aws_vpc.main.id
 
@@ -150,7 +166,7 @@ resource "aws_security_group" "rds" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  tags = merge(var.common_tags, { Name = "${var.project_name}-rds-sg" })
+  tags = merge(local.resource_tags, { Name = "${local.name_prefix}-rds-sg" })
 }
 
 # ─── EC2 Instance ─────────────────────────────────────────────────────────────
@@ -173,27 +189,27 @@ resource "aws_instance" "main" {
     ignore_changes = [ami]
   }
 
-  tags = merge(var.common_tags, { Name = "team07-web" })
+  tags = merge(local.resource_tags, { Name = "${local.name_prefix}-web" })
 }
 
 resource "aws_eip" "main" {
   instance = aws_instance.main.id
   domain   = "vpc"
 
-  tags = merge(var.common_tags, { Name = "${var.project_name}-eip" })
+  tags = merge(local.resource_tags, { Name = "${local.name_prefix}-eip" })
 }
 
 # ─── RDS ──────────────────────────────────────────────────────────────────────
 
 resource "aws_db_subnet_group" "main" {
-  # RDS subnet group name must start with a letter — prefix with "rds-"
-  name       = "rds-7sungsa-subnet-group"
+  name       = "${local.name_prefix}-rds-subnet-group"
   subnet_ids = aws_subnet.public[*].id
 
-  tags = merge(var.common_tags, { Name = "${var.project_name}-rds-subnet-group" })
+  tags = merge(local.resource_tags, { Name = "${local.name_prefix}-rds-subnet-group" })
 }
 
 resource "aws_db_instance" "main" {
+  identifier             = "${local.name_prefix}-mysql"
   engine                 = "mysql"
   engine_version         = var.rds_engine_version
   instance_class         = var.rds_instance_class
@@ -207,13 +223,13 @@ resource "aws_db_instance" "main" {
   multi_az               = false
   skip_final_snapshot    = true
 
-  tags = merge(var.common_tags, { Name = "${var.project_name}-rds" })
+  tags = merge(local.resource_tags, { Name = "${local.name_prefix}-rds" })
 }
 
 # ─── IAM Role for EC2 ────────────────────────────────────────────────────────
 
 resource "aws_iam_role" "ec2" {
-  name = "team07-ec2-role"
+  name = "${local.name_prefix}-ec2-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -226,12 +242,28 @@ resource "aws_iam_role" "ec2" {
     ]
   })
 
-  tags = merge(var.common_tags, { Name = "team07-ec2-role" })
+  tags = merge(local.resource_tags, { Name = "${local.name_prefix}-ec2-role" })
 }
 
-resource "aws_iam_role_policy_attachment" "ec2_s3" {
-  role       = aws_iam_role.ec2.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonS3FullAccess"
+resource "aws_iam_role_policy" "ec2_s3" {
+  name = "${local.name_prefix}-s3-access"
+  role = aws_iam_role.ec2.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "ApplicationImageObjectAccess"
+        Effect = "Allow"
+        Action = [
+          "s3:GetObject",
+          "s3:PutObject",
+          "s3:DeleteObject"
+        ]
+        Resource = "${aws_s3_bucket.main.arn}/*"
+      }
+    ]
+  })
 }
 
 resource "aws_iam_role_policy_attachment" "ec2_ssm" {
@@ -240,10 +272,10 @@ resource "aws_iam_role_policy_attachment" "ec2_ssm" {
 }
 
 resource "aws_iam_instance_profile" "ec2" {
-  name = "team07-ec2-instance-profile"
+  name = "${local.name_prefix}-ec2-instance-profile"
   role = aws_iam_role.ec2.name
 
-  tags = merge(var.common_tags, { Name = "team07-ec2-instance-profile" })
+  tags = merge(local.resource_tags, { Name = "${local.name_prefix}-ec2-instance-profile" })
 }
 
 # ─── S3 ───────────────────────────────────────────────────────────────────────
@@ -251,7 +283,7 @@ resource "aws_iam_instance_profile" "ec2" {
 resource "aws_s3_bucket" "main" {
   bucket = var.s3_bucket_name
 
-  tags = merge(var.common_tags, { Name = "${var.project_name}-bucket-popup-images" })
+  tags = merge(local.resource_tags, { Name = "${local.name_prefix}-bucket-popup-images" })
 }
 
 resource "aws_s3_bucket_public_access_block" "main" {

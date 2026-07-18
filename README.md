@@ -4,7 +4,7 @@
 
 현장 선착순으로 운영되던 팝업스토어를 **사전 예약 + 실시간 정원 관리** 방식으로 전환한 예약 플랫폼입니다. 예약이 순간적으로 몰려도 정원을 초과하지 않고, 대기열로 공정한 입장 순서를 보장합니다.
 
-- 프론트엔드 배포: https://nbe-9-11-final-team07.vercel.app
+- 프론트엔드 배포: https://popspot-gilt.vercel.app
 - GitHub: prgrms-be-devcourse/NBE9-11-final-Team07
 
 ---
