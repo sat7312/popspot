@@ -106,6 +106,34 @@ public class PaymentTransactionService {
 		return PaymentConfirmResponse.from(payment);
 	}
 
+	// 토스가 명확히 거절한 승인 요청을 다시 승인 가능한 READY 상태로 복구
+	@Transactional
+	public void rejectConfirmation(PaymentConfirmRequest request) {
+		paymentRepository.revertConfirmationIfConfirming(
+			request.orderId(),
+			request.paymentKey(),
+			PaymentStatus.CONFIRMING,
+			PaymentStatus.READY
+		);
+	}
+
+	// 승인 결과가 확정되지 않은 채 남은 결제의 복구 대상을 조회
+	@Transactional(readOnly = true)
+	public List<PaymentConfirmRequest> findStaleConfirmations(LocalDateTime startedBefore) {
+		return paymentRepository.findTop20ByStatusAndConfirmStartedAtBeforeOrderByIdAsc(
+				PaymentStatus.CONFIRMING,
+				startedBefore
+			)
+			.stream()
+			.map(payment -> new PaymentConfirmRequest(
+				payment.getPaymentKey(),
+				payment.getOrderId(),
+				payment.getAmount(),
+				payment.getConfirmIdempotencyKey()
+			))
+			.toList();
+	}
+
 	// 이미 시작된 결제 승인 요청의 처리 방향을 결정
 	private PaymentConfirmPreparation handleAlreadyStartedConfirmation(Payment payment, PaymentConfirmRequest request) {
 		if (payment.isPaid()) {

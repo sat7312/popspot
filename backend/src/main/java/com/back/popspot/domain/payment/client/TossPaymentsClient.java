@@ -41,7 +41,16 @@ public class TossPaymentsClient {
 			.body(JsonNode.class);
 	}
 
+	// 주문 번호로 토스 결제 상태를 조회
+	public JsonNode findByOrderId(String orderId) {
+		return tossPaymentsRestClient.get()
+			.uri("/v1/payments/orders/{orderId}", orderId)
+			.retrieve()
+			.body(JsonNode.class);
+	}
+
+	// 거절 후 새 결제 키로 다시 승인할 수 있도록 결제 키까지 포함
 	private String confirmIdempotencyKey(PaymentConfirmRequest request) {
-		return CONFIRM_IDEMPOTENCY_KEY_PREFIX + request.orderId();
+		return CONFIRM_IDEMPOTENCY_KEY_PREFIX + request.orderId() + ":" + request.paymentKey();
 	}
 }

@@ -382,6 +382,19 @@ class PaymentTransactionServiceTest {
 	}
 
 	@Test
+	@DisplayName("거절된 승인 요청은 같은 결제 키의 CONFIRMING 결제만 READY로 되돌린다")
+	void revertRejectedConfirmation() {
+		paymentTransactionService.rejectConfirmation(request(1000L));
+
+		verify(paymentRepository).revertConfirmationIfConfirming(
+			"order-id",
+			"payment-key",
+			PaymentStatus.CONFIRMING,
+			PaymentStatus.READY
+		);
+	}
+
+	@Test
 	@DisplayName("토스 취소 완료 후 결제와 환불 상태를 변경한다")
 	void completePaymentCancel() {
 		Payment payment = paidPayment();
