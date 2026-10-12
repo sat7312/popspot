@@ -124,6 +124,32 @@ class PaymentServiceTest {
 	}
 
 	@Test
+	@DisplayName("승인 후 굿즈 주문이 만료됐으면 토스 결제를 보상 취소한다")
+	void compensateWhenGoodsOrderExpired() throws Exception {
+		PaymentConfirmRequest request = new PaymentConfirmRequest("payment-key", "order-id", 1000L, "confirm-key");
+		PaymentCancelCommand command = cancelCommand();
+
+		given(paymentTransactionService.prepare(request)).willReturn(PaymentConfirmPreparation.required());
+		given(tossPaymentsClient.confirm(request)).willReturn(tossResponse("payment-key", "order-id", 1000L));
+		given(paymentTransactionService.complete(request, APPROVED_AT))
+			.willThrow(new BusinessException(ErrorCode.GOODS_ORDER_PAYMENT_EXPIRED));
+		given(paymentTransactionService.prepareCompensation(request, "결제 승인 후 주문 확정 실패"))
+			.willReturn(command);
+		given(tossPaymentsClient.cancel(command)).willReturn(cancelResponse("CANCELED", "DONE", 1000L));
+
+		assertThatThrownBy(() -> paymentService.confirm(request))
+			.isInstanceOf(BusinessException.class)
+			.extracting("errorCode")
+			.isEqualTo(ErrorCode.GOODS_ORDER_PAYMENT_EXPIRED);
+
+		verify(paymentTransactionService).completeCompensation(
+			command,
+			"transaction-key",
+			LocalDateTime.of(2026, 6, 16, 11, 0)
+		);
+	}
+
+	@Test
 	@DisplayName("승인 후 예약을 확정할 수 없으면 토스 결제를 보상 취소한다")
 	void compensateWhenReservationCannotBeConfirmed() throws Exception {
 		PaymentConfirmRequest request = new PaymentConfirmRequest("payment-key", "order-id", 1000L, "confirm-key");

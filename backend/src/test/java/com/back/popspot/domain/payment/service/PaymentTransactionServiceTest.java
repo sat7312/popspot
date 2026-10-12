@@ -22,6 +22,8 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import com.back.popspot.domain.goods.entity.GoodsOrder;
+import com.back.popspot.domain.goods.entity.GoodsOrderStatus;
 import com.back.popspot.domain.payment.dto.PaymentConfirmRequest;
 import com.back.popspot.domain.payment.dto.PaymentConfirmResponse;
 import com.back.popspot.domain.payment.dto.PaymentCancelCommand;
@@ -350,6 +352,36 @@ class PaymentTransactionServiceTest {
 	}
 
 	@Test
+	@DisplayName("만료된 굿즈 주문의 결제는 승인을 시작하지 않는다")
+	void rejectExpiredGoodsOrderPayment() {
+		Payment payment = readyGoodsOrderPayment(GoodsOrderStatus.EXPIRED, LocalDateTime.now().minusMinutes(1));
+		given(paymentRepository.findByOrderId("order-id")).willReturn(Optional.of(payment));
+
+		assertBusinessException(
+			() -> paymentTransactionService.prepare(request(1000L)),
+			ErrorCode.GOODS_ORDER_PAYMENT_NOT_ALLOWED_STATUS
+		);
+		verify(paymentRepository, never()).beginConfirmationIfReady(
+			anyString(), anyLong(), anyString(), anyString(), any(), any(), any()
+		);
+	}
+
+	@Test
+	@DisplayName("토스 승인 중 굿즈 주문 결제 시간이 만료되면 완료 처리하지 않는다")
+	void rejectGoodsOrderExpiredBeforeCompletion() {
+		Payment payment = readyGoodsOrderPayment(GoodsOrderStatus.PENDING, LocalDateTime.now().minusSeconds(1));
+		payment.beginConfirmation();
+		given(paymentRepository.findByOrderId("order-id")).willReturn(Optional.of(payment));
+
+		assertBusinessException(
+			() -> paymentTransactionService.complete(request(1000L), APPROVED_AT),
+			ErrorCode.GOODS_ORDER_PAYMENT_EXPIRED
+		);
+		assertThat(payment.getStatus()).isEqualTo(PaymentStatus.CONFIRMING);
+		assertThat(payment.getGoodsOrder().getStatus()).isEqualTo(GoodsOrderStatus.PENDING);
+	}
+
+	@Test
 	@DisplayName("토스 취소 완료 후 결제와 환불 상태를 변경한다")
 	void completePaymentCancel() {
 		Payment payment = paidPayment();
@@ -461,6 +493,25 @@ class PaymentTransactionServiceTest {
 			PaymentStatus.CANCELING,
 			List.of(PaymentStatus.PAID, PaymentStatus.CANCEL_FAILED)
 		)).willReturn(updatedRows);
+	}
+
+	private Payment readyGoodsOrderPayment(GoodsOrderStatus status, LocalDateTime expiresAt) {
+		User user = User.create("user@example.com", "사용자");
+		GoodsOrder goodsOrder = new GoodsOrder(
+			user, 1000, 0, 1000, status, "수령인", "01000000000", "12345", "주소", null
+		);
+		goodsOrder.setExpiresAt(expiresAt);
+		ReflectionTestUtils.setField(goodsOrder, "id", 30L);
+		Payment payment = Payment.createReadyGoodsOrderPayment(
+			user,
+			goodsOrder,
+			"order-id",
+			"굿즈 결제",
+			1000L,
+			"idempotency-key"
+		);
+		ReflectionTestUtils.setField(payment, "id", 10L);
+		return payment;
 	}
 
 	private Payment confirmingPayment(String paymentKey, String confirmIdempotencyKey) {

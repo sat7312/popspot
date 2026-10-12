@@ -42,6 +42,8 @@ public enum ErrorCode {
 	GOODS_OUT_OF_STOCK(HttpStatus.CONFLICT, "재고가 부족합니다."),
 	GOODS_NOT_ON_SALE(HttpStatus.BAD_REQUEST, "현재 판매 중인 굿즈가 아닙니다."),
 	GOODS_ORDER_REFUND_NOT_ALLOWED(HttpStatus.BAD_REQUEST, "환불할 수 없는 주문 상태입니다."),
+	GOODS_ORDER_PAYMENT_NOT_ALLOWED_STATUS(HttpStatus.BAD_REQUEST, "결제를 진행할 수 없는 주문 상태입니다."),
+	GOODS_ORDER_PAYMENT_EXPIRED(HttpStatus.BAD_REQUEST, "주문 결제 가능 시간이 만료되었습니다."),
 	PAYMENT_AMOUNT_MISMATCH(HttpStatus.BAD_REQUEST, "결제 금액이 일치하지 않습니다."),
 	PAYMENT_CONFIRM_NOT_ALLOWED_STATUS(HttpStatus.BAD_REQUEST, "승인할 수 없는 결제 상태입니다."),
 	PAYMENT_KEY_MISMATCH(HttpStatus.BAD_REQUEST, "결제 키가 일치하지 않습니다."),

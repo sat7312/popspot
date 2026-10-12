@@ -4,6 +4,7 @@ import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
 import java.time.format.DateTimeParseException;
 import java.util.List;
+import java.util.Set;
 
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClientException;
@@ -28,6 +29,12 @@ import tools.jackson.databind.JsonNode;
 @Slf4j
 public class PaymentService {
 	private static final String CONFIRM_COMPENSATION_REASON = "결제 승인 후 주문 확정 실패";
+	private static final Set<ErrorCode> COMPENSATION_REQUIRED_ERRORS = Set.of(
+		ErrorCode.RESERVATION_PAYMENT_EXPIRED,
+		ErrorCode.RESERVATION_PAYMENT_NOT_ALLOWED_STATUS,
+		ErrorCode.GOODS_ORDER_PAYMENT_EXPIRED,
+		ErrorCode.GOODS_ORDER_PAYMENT_NOT_ALLOWED_STATUS
+	);
 
 	private final PaymentTransactionService paymentTransactionService;
 	private final TossPaymentsClient tossPaymentsClient;
@@ -55,8 +62,7 @@ public class PaymentService {
 
 	// 승인 완료 후 보상 취소가 필요한 예외인지 확인
 	private boolean requiresCompensation(BusinessException exception) {
-		return exception.getErrorCode() == ErrorCode.RESERVATION_PAYMENT_EXPIRED
-			|| exception.getErrorCode() == ErrorCode.RESERVATION_PAYMENT_NOT_ALLOWED_STATUS;
+		return COMPENSATION_REQUIRED_ERRORS.contains(exception.getErrorCode());
 	}
 
 	// 승인 후 주문 확정 실패 결제를 보상 취소 처리
