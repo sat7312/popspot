@@ -31,6 +31,10 @@ import lombok.RequiredArgsConstructor;
 @Service
 @RequiredArgsConstructor
 public class PaymentTransactionService {
+	private static final List<PaymentStatus> CANCELABLE_STATUSES = List.of(
+		PaymentStatus.PAID,
+		PaymentStatus.CANCEL_FAILED
+	);
 
 	private final PaymentRepository paymentRepository;
 	private final PaymentRefundRepository paymentRefundRepository;
@@ -228,6 +232,17 @@ public class PaymentTransactionService {
 			});
 		validateCancelable(payment);
 
+		// 동시 취소 요청 중 하나만 CANCELING 상태를 선점
+		int updated = paymentRepository.beginCancelIfCancelable(
+			paymentId,
+			PaymentStatus.CANCELING,
+			CANCELABLE_STATUSES
+		);
+		if (updated == 0) {
+			throw new BusinessException(ErrorCode.PAYMENT_CANCEL_ALREADY_REQUESTED);
+		}
+		payment.beginCancel();
+
 		PaymentRefund refund = PaymentRefund.request(
 			payment,
 			payment.getUser(),
@@ -236,7 +251,6 @@ public class PaymentTransactionService {
 			request.idempotencyKey()
 		);
 		paymentRefundRepository.save(refund);
-		payment.beginCancel();
 
 		return PaymentCancelPreparation.required(toCommand(payment, request));
 	}

@@ -70,6 +70,21 @@ public interface PaymentRepository extends JpaRepository<Payment, Long> {
 		@Param("confirmingStatus") PaymentStatus confirmingStatus
 	);
 
+	// 취소 가능한 결제를 취소 진행 상태로 조건부 변경
+	// 동시 취소 요청 중 하나만 상태를 선점한다.
+	@Modifying
+	@Query("""
+		update Payment p
+		set p.status = :cancelingStatus
+		where p.id = :paymentId
+			and p.status in :cancelableStatuses
+		""")
+	int beginCancelIfCancelable(
+		@Param("paymentId") Long paymentId,
+		@Param("cancelingStatus") PaymentStatus cancelingStatus,
+		@Param("cancelableStatuses") Collection<PaymentStatus> cancelableStatuses
+	);
+
 	// 굿즈 주문에 연결된 결제 조회 (환불 오케스트레이션 시 사용)
 	Optional<Payment> findByGoodsOrder_Id(Long goodsOrderId);
 

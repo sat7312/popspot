@@ -283,6 +283,7 @@ class PaymentTransactionServiceTest {
 		given(paymentRepository.findById(10L)).willReturn(Optional.of(payment));
 		given(paymentRefundRepository.findByIdempotencyKey("cancel-key")).willReturn(Optional.empty());
 		given(paymentRefundRepository.findFirstByPaymentIdOrderByIdDesc(10L)).willReturn(Optional.empty());
+		givenCancelStatusAcquired(1);
 
 		PaymentCancelPreparation preparation = paymentTransactionService.prepareCancel(10L, 1L, request);
 
@@ -303,6 +304,7 @@ class PaymentTransactionServiceTest {
 		given(paymentRefundRepository.findByIdempotencyKey("new-cancel-key")).willReturn(Optional.empty());
 		given(paymentRefundRepository.findFirstByPaymentIdOrderByIdDesc(10L))
 			.willReturn(Optional.of(failedRefund));
+		givenCancelStatusAcquired(1);
 
 		PaymentCancelPreparation preparation = paymentTransactionService.prepareCancel(10L, 1L, request);
 
@@ -328,6 +330,23 @@ class PaymentTransactionServiceTest {
 			() -> paymentTransactionService.prepareCancel(10L, 1L, request),
 			ErrorCode.PAYMENT_CANCEL_ALREADY_REQUESTED
 		);
+	}
+
+	@Test
+	@DisplayName("동시 취소 요청에 상태 선점을 빼앗기면 환불을 만들지 않고 거부한다")
+	void rejectCancelWhenAnotherRequestAcquiredStatus() {
+		Payment payment = paidPayment();
+		PaymentCancelRequest request = new PaymentCancelRequest("동시 요청", "other-cancel-key");
+		given(paymentRepository.findById(10L)).willReturn(Optional.of(payment));
+		given(paymentRefundRepository.findByIdempotencyKey("other-cancel-key")).willReturn(Optional.empty());
+		given(paymentRefundRepository.findFirstByPaymentIdOrderByIdDesc(10L)).willReturn(Optional.empty());
+		givenCancelStatusAcquired(0);
+
+		assertBusinessException(
+			() -> paymentTransactionService.prepareCancel(10L, 1L, request),
+			ErrorCode.PAYMENT_CANCEL_ALREADY_REQUESTED
+		);
+		verify(paymentRefundRepository, never()).save(any());
 	}
 
 	@Test
@@ -434,6 +453,14 @@ class PaymentTransactionServiceTest {
 		);
 		ReflectionTestUtils.setField(payment, "id", 10L);
 		return payment;
+	}
+
+	private void givenCancelStatusAcquired(int updatedRows) {
+		given(paymentRepository.beginCancelIfCancelable(
+			10L,
+			PaymentStatus.CANCELING,
+			List.of(PaymentStatus.PAID, PaymentStatus.CANCEL_FAILED)
+		)).willReturn(updatedRows);
 	}
 
 	private Payment confirmingPayment(String paymentKey, String confirmIdempotencyKey) {
