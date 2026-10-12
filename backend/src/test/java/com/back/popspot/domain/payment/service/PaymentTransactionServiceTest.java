@@ -22,6 +22,8 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import com.back.popspot.domain.goods.entity.GoodsOrder;
+import com.back.popspot.domain.goods.entity.GoodsOrderStatus;
 import com.back.popspot.domain.payment.dto.PaymentConfirmRequest;
 import com.back.popspot.domain.payment.dto.PaymentConfirmResponse;
 import com.back.popspot.domain.payment.dto.PaymentCancelCommand;
@@ -283,6 +285,7 @@ class PaymentTransactionServiceTest {
 		given(paymentRepository.findById(10L)).willReturn(Optional.of(payment));
 		given(paymentRefundRepository.findByIdempotencyKey("cancel-key")).willReturn(Optional.empty());
 		given(paymentRefundRepository.findFirstByPaymentIdOrderByIdDesc(10L)).willReturn(Optional.empty());
+		givenCancelStatusAcquired(1);
 
 		PaymentCancelPreparation preparation = paymentTransactionService.prepareCancel(10L, 1L, request);
 
@@ -303,6 +306,7 @@ class PaymentTransactionServiceTest {
 		given(paymentRefundRepository.findByIdempotencyKey("new-cancel-key")).willReturn(Optional.empty());
 		given(paymentRefundRepository.findFirstByPaymentIdOrderByIdDesc(10L))
 			.willReturn(Optional.of(failedRefund));
+		givenCancelStatusAcquired(1);
 
 		PaymentCancelPreparation preparation = paymentTransactionService.prepareCancel(10L, 1L, request);
 
@@ -327,6 +331,66 @@ class PaymentTransactionServiceTest {
 		assertBusinessException(
 			() -> paymentTransactionService.prepareCancel(10L, 1L, request),
 			ErrorCode.PAYMENT_CANCEL_ALREADY_REQUESTED
+		);
+	}
+
+	@Test
+	@DisplayName("동시 취소 요청에 상태 선점을 빼앗기면 환불을 만들지 않고 거부한다")
+	void rejectCancelWhenAnotherRequestAcquiredStatus() {
+		Payment payment = paidPayment();
+		PaymentCancelRequest request = new PaymentCancelRequest("동시 요청", "other-cancel-key");
+		given(paymentRepository.findById(10L)).willReturn(Optional.of(payment));
+		given(paymentRefundRepository.findByIdempotencyKey("other-cancel-key")).willReturn(Optional.empty());
+		given(paymentRefundRepository.findFirstByPaymentIdOrderByIdDesc(10L)).willReturn(Optional.empty());
+		givenCancelStatusAcquired(0);
+
+		assertBusinessException(
+			() -> paymentTransactionService.prepareCancel(10L, 1L, request),
+			ErrorCode.PAYMENT_CANCEL_ALREADY_REQUESTED
+		);
+		verify(paymentRefundRepository, never()).save(any());
+	}
+
+	@Test
+	@DisplayName("만료된 굿즈 주문의 결제는 승인을 시작하지 않는다")
+	void rejectExpiredGoodsOrderPayment() {
+		Payment payment = readyGoodsOrderPayment(GoodsOrderStatus.EXPIRED, LocalDateTime.now().minusMinutes(1));
+		given(paymentRepository.findByOrderId("order-id")).willReturn(Optional.of(payment));
+
+		assertBusinessException(
+			() -> paymentTransactionService.prepare(request(1000L)),
+			ErrorCode.GOODS_ORDER_PAYMENT_NOT_ALLOWED_STATUS
+		);
+		verify(paymentRepository, never()).beginConfirmationIfReady(
+			anyString(), anyLong(), anyString(), anyString(), any(), any(), any()
+		);
+	}
+
+	@Test
+	@DisplayName("토스 승인 중 굿즈 주문 결제 시간이 만료되면 완료 처리하지 않는다")
+	void rejectGoodsOrderExpiredBeforeCompletion() {
+		Payment payment = readyGoodsOrderPayment(GoodsOrderStatus.PENDING, LocalDateTime.now().minusSeconds(1));
+		payment.beginConfirmation();
+		given(paymentRepository.findByOrderId("order-id")).willReturn(Optional.of(payment));
+
+		assertBusinessException(
+			() -> paymentTransactionService.complete(request(1000L), APPROVED_AT),
+			ErrorCode.GOODS_ORDER_PAYMENT_EXPIRED
+		);
+		assertThat(payment.getStatus()).isEqualTo(PaymentStatus.CONFIRMING);
+		assertThat(payment.getGoodsOrder().getStatus()).isEqualTo(GoodsOrderStatus.PENDING);
+	}
+
+	@Test
+	@DisplayName("거절된 승인 요청은 같은 결제 키의 CONFIRMING 결제만 READY로 되돌린다")
+	void revertRejectedConfirmation() {
+		paymentTransactionService.rejectConfirmation(request(1000L));
+
+		verify(paymentRepository).revertConfirmationIfConfirming(
+			"order-id",
+			"payment-key",
+			PaymentStatus.CONFIRMING,
+			PaymentStatus.READY
 		);
 	}
 
@@ -427,6 +491,33 @@ class PaymentTransactionServiceTest {
 		Payment payment = Payment.createReady(
 			user,
 			PaymentType.GOODS,
+			"order-id",
+			"굿즈 결제",
+			1000L,
+			"idempotency-key"
+		);
+		ReflectionTestUtils.setField(payment, "id", 10L);
+		return payment;
+	}
+
+	private void givenCancelStatusAcquired(int updatedRows) {
+		given(paymentRepository.beginCancelIfCancelable(
+			10L,
+			PaymentStatus.CANCELING,
+			List.of(PaymentStatus.PAID, PaymentStatus.CANCEL_FAILED)
+		)).willReturn(updatedRows);
+	}
+
+	private Payment readyGoodsOrderPayment(GoodsOrderStatus status, LocalDateTime expiresAt) {
+		User user = User.create("user@example.com", "사용자");
+		GoodsOrder goodsOrder = new GoodsOrder(
+			user, 1000, 0, 1000, status, "수령인", "01000000000", "12345", "주소", null
+		);
+		goodsOrder.setExpiresAt(expiresAt);
+		ReflectionTestUtils.setField(goodsOrder, "id", 30L);
+		Payment payment = Payment.createReadyGoodsOrderPayment(
+			user,
+			goodsOrder,
 			"order-id",
 			"굿즈 결제",
 			1000L,

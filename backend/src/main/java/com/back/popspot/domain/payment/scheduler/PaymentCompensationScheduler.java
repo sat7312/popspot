@@ -25,4 +25,10 @@ public class PaymentCompensationScheduler {
 	public void retryFailedCancels() {
 		paymentService.retryFailedCancels();
 	}
+
+	// 승인 결과가 확정되지 않은 결제를 주기적으로 복구
+	@Scheduled(fixedDelay = RETRY_DELAY_MILLIS)
+	public void recoverStaleConfirmations() {
+		paymentService.recoverStaleConfirmations();
+	}
 }

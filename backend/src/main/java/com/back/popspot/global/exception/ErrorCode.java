@@ -42,6 +42,8 @@ public enum ErrorCode {
 	GOODS_OUT_OF_STOCK(HttpStatus.CONFLICT, "재고가 부족합니다."),
 	GOODS_NOT_ON_SALE(HttpStatus.BAD_REQUEST, "현재 판매 중인 굿즈가 아닙니다."),
 	GOODS_ORDER_REFUND_NOT_ALLOWED(HttpStatus.BAD_REQUEST, "환불할 수 없는 주문 상태입니다."),
+	GOODS_ORDER_PAYMENT_NOT_ALLOWED_STATUS(HttpStatus.BAD_REQUEST, "결제를 진행할 수 없는 주문 상태입니다."),
+	GOODS_ORDER_PAYMENT_EXPIRED(HttpStatus.BAD_REQUEST, "주문 결제 가능 시간이 만료되었습니다."),
 	PAYMENT_AMOUNT_MISMATCH(HttpStatus.BAD_REQUEST, "결제 금액이 일치하지 않습니다."),
 	PAYMENT_CONFIRM_NOT_ALLOWED_STATUS(HttpStatus.BAD_REQUEST, "승인할 수 없는 결제 상태입니다."),
 	PAYMENT_KEY_MISMATCH(HttpStatus.BAD_REQUEST, "결제 키가 일치하지 않습니다."),
@@ -52,6 +54,7 @@ public enum ErrorCode {
 	PAYMENT_CANCEL_FAILED(HttpStatus.BAD_GATEWAY, "결제 취소 요청에 실패했습니다."),
 	PAYMENT_CONFIRM_ALREADY_REQUESTED(HttpStatus.CONFLICT, "이미 다른 결제 승인 요청이 진행 중입니다."),
 	PAYMENT_CONFIRM_IN_PROGRESS(HttpStatus.CONFLICT, "결제 승인이 처리 중입니다."),
+	PAYMENT_CONFIRM_REJECTED(HttpStatus.BAD_GATEWAY, "결제 승인이 거절되었습니다."),
 	PAYMENT_IDEMPOTENCY_KEY_MISMATCH(HttpStatus.CONFLICT, "결제 승인 멱등성 키가 일치하지 않습니다."),
 
 	RESERVATION_TEMPORARILY_UNAVAILABLE(HttpStatus.SERVICE_UNAVAILABLE, "예약이 일시 중단됩니다. 잠시 후 다시 시도해주세요."),

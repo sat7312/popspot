@@ -4,8 +4,11 @@ import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
 import java.time.format.DateTimeParseException;
 import java.util.List;
+import java.util.Set;
 
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestClientException;
 
 import com.back.popspot.domain.payment.client.TossPaymentsClient;
@@ -28,6 +31,16 @@ import tools.jackson.databind.JsonNode;
 @Slf4j
 public class PaymentService {
 	private static final String CONFIRM_COMPENSATION_REASON = "결제 승인 후 주문 확정 실패";
+	private static final String TOSS_ALREADY_PROCESSED_CODE = "ALREADY_PROCESSED_PAYMENT";
+	// 진행 중인 승인 호출과 겹치지 않도록 충분히 지난 결제만 복구 대상으로 본다.
+	private static final long CONFIRM_STALE_SECONDS = 90L;
+	private static final Set<String> UNAPPROVED_TOSS_STATUSES = Set.of("ABORTED", "EXPIRED");
+	private static final Set<ErrorCode> COMPENSATION_REQUIRED_ERRORS = Set.of(
+		ErrorCode.RESERVATION_PAYMENT_EXPIRED,
+		ErrorCode.RESERVATION_PAYMENT_NOT_ALLOWED_STATUS,
+		ErrorCode.GOODS_ORDER_PAYMENT_EXPIRED,
+		ErrorCode.GOODS_ORDER_PAYMENT_NOT_ALLOWED_STATUS
+	);
 
 	private final PaymentTransactionService paymentTransactionService;
 	private final TossPaymentsClient tossPaymentsClient;
@@ -40,11 +53,60 @@ public class PaymentService {
 			return preparation.existingResponse();
 		}
 
-		JsonNode tossResponse = tossPaymentsClient.confirm(request);
+		JsonNode tossResponse;
+		try {
+			tossResponse = tossPaymentsClient.confirm(request);
+		} catch (HttpClientErrorException exception) {
+			if (!isDefiniteRejection(exception)) {
+				throw exception;
+			}
+			paymentTransactionService.rejectConfirmation(request);
+			throw new BusinessException(ErrorCode.PAYMENT_CONFIRM_REJECTED);
+		}
 		validateTossConfirmResponse(tossResponse, request);
 
+		return completeConfirmedPayment(request, extractApprovedAt(tossResponse));
+	}
+
+	// 승인 결과가 확정되지 않은 결제를 토스 조회 결과로 복구
+	public void recoverStaleConfirmations() {
+		LocalDateTime startedBefore = LocalDateTime.now().minusSeconds(CONFIRM_STALE_SECONDS);
+		paymentTransactionService.findStaleConfirmations(startedBefore).forEach(request -> {
+			try {
+				recoverConfirmation(request);
+			} catch (RuntimeException exception) {
+				log.error("Payment confirm recovery failed. orderId={}", request.orderId(), exception);
+			}
+		});
+	}
+
+	// 토스의 실제 결제 상태에 맞춰 승인 진행 중인 결제를 확정하거나 되돌림
+	private void recoverConfirmation(PaymentConfirmRequest request) {
+		JsonNode tossPayment;
 		try {
-			return paymentTransactionService.complete(request, extractApprovedAt(tossResponse));
+			tossPayment = tossPaymentsClient.findByOrderId(request.orderId());
+		} catch (HttpClientErrorException.NotFound exception) {
+			paymentTransactionService.rejectConfirmation(request);
+			return;
+		}
+
+		String status = tossPayment.path("status").asString(null);
+		if ("DONE".equals(status)) {
+			validateTossConfirmResponse(tossPayment, request);
+			completeConfirmedPayment(request, extractApprovedAt(tossPayment));
+			return;
+		}
+
+		// 그 외 상태는 승인 여부가 아직 확정되지 않았으므로 다음 주기에 다시 확인
+		if (UNAPPROVED_TOSS_STATUSES.contains(status)) {
+			paymentTransactionService.rejectConfirmation(request);
+		}
+	}
+
+	// 토스 승인이 끝난 결제를 완료 처리하고 확정할 수 없으면 보상 취소
+	private PaymentConfirmResponse completeConfirmedPayment(PaymentConfirmRequest request, LocalDateTime approvedAt) {
+		try {
+			return paymentTransactionService.complete(request, approvedAt);
 		} catch (BusinessException exception) {
 			if (requiresCompensation(exception)) {
 				compensateConfirmedPayment(request);
@@ -53,10 +115,16 @@ public class PaymentService {
 		}
 	}
 
+	// 토스가 승인하지 않았음이 확실한 응답인지 확인
+	// 409와 ALREADY_PROCESSED_PAYMENT는 승인됐을 수 있어 복구 스케줄러에 맡긴다.
+	private boolean isDefiniteRejection(HttpClientErrorException exception) {
+		return exception.getStatusCode().value() != HttpStatus.CONFLICT.value()
+			&& !exception.getResponseBodyAsString().contains(TOSS_ALREADY_PROCESSED_CODE);
+	}
+
 	// 승인 완료 후 보상 취소가 필요한 예외인지 확인
 	private boolean requiresCompensation(BusinessException exception) {
-		return exception.getErrorCode() == ErrorCode.RESERVATION_PAYMENT_EXPIRED
-			|| exception.getErrorCode() == ErrorCode.RESERVATION_PAYMENT_NOT_ALLOWED_STATUS;
+		return COMPENSATION_REQUIRED_ERRORS.contains(exception.getErrorCode());
 	}
 
 	// 승인 후 주문 확정 실패 결제를 보상 취소 처리

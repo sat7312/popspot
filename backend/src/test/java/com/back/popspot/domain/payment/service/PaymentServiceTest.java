@@ -8,6 +8,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
+import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.util.List;
 
@@ -17,7 +18,11 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
 import org.springframework.transaction.TransactionSystemException;
+import org.springframework.web.client.HttpClientErrorException;
+import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestClientException;
 
 import com.back.popspot.domain.payment.client.TossPaymentsClient;
@@ -121,6 +126,121 @@ class PaymentServiceTest {
 			.isEqualTo(ErrorCode.PAYMENT_CONFIRM_RESPONSE_MISMATCH);
 
 		verify(paymentTransactionService, never()).complete(any(), any());
+	}
+
+	@Test
+	@DisplayName("토스가 승인을 명확히 거절하면 결제를 다시 승인 가능한 상태로 되돌린다")
+	void revertWhenTossRejectsConfirmation() {
+		PaymentConfirmRequest request = new PaymentConfirmRequest("payment-key", "order-id", 1000L, "confirm-key");
+
+		given(paymentTransactionService.prepare(request)).willReturn(PaymentConfirmPreparation.required());
+		given(tossPaymentsClient.confirm(request))
+			.willThrow(tossError(HttpStatus.BAD_REQUEST, "REJECT_CARD_COMPANY"));
+
+		assertThatThrownBy(() -> paymentService.confirm(request))
+			.isInstanceOf(BusinessException.class)
+			.extracting("errorCode")
+			.isEqualTo(ErrorCode.PAYMENT_CONFIRM_REJECTED);
+
+		verify(paymentTransactionService).rejectConfirmation(request);
+		verify(paymentTransactionService, never()).complete(any(), any());
+	}
+
+	@Test
+	@DisplayName("승인 여부가 불확실한 토스 오류에서는 결제 상태를 되돌리지 않는다")
+	void keepConfirmingWhenTossResultIsUncertain() {
+		PaymentConfirmRequest request = new PaymentConfirmRequest("payment-key", "order-id", 1000L, "confirm-key");
+
+		given(paymentTransactionService.prepare(request)).willReturn(PaymentConfirmPreparation.required());
+		given(tossPaymentsClient.confirm(request))
+			.willThrow(new ResourceAccessException("read timed out"))
+			.willThrow(tossError(HttpStatus.BAD_REQUEST, "ALREADY_PROCESSED_PAYMENT"))
+			.willThrow(tossError(HttpStatus.CONFLICT, "IDEMPOTENT_REQUEST_PROCESSING"));
+
+		assertThatThrownBy(() -> paymentService.confirm(request)).isInstanceOf(ResourceAccessException.class);
+		assertThatThrownBy(() -> paymentService.confirm(request)).isInstanceOf(HttpClientErrorException.class);
+		assertThatThrownBy(() -> paymentService.confirm(request)).isInstanceOf(HttpClientErrorException.class);
+
+		verify(paymentTransactionService, never()).rejectConfirmation(any());
+	}
+
+	@Test
+	@DisplayName("승인 진행 중으로 남은 결제가 토스에서 승인 완료됐으면 완료 처리한다")
+	void recoverStaleConfirmationApprovedByToss() throws Exception {
+		PaymentConfirmRequest request = new PaymentConfirmRequest("payment-key", "order-id", 1000L, "confirm-key");
+
+		given(paymentTransactionService.findStaleConfirmations(any())).willReturn(List.of(request));
+		given(tossPaymentsClient.findByOrderId("order-id"))
+			.willReturn(tossResponse("payment-key", "order-id", 1000L));
+
+		paymentService.recoverStaleConfirmations();
+
+		verify(paymentTransactionService).complete(request, APPROVED_AT);
+		verify(paymentTransactionService, never()).rejectConfirmation(any());
+	}
+
+	@Test
+	@DisplayName("승인 진행 중으로 남은 결제가 토스에서 승인되지 않았으면 READY로 되돌린다")
+	void recoverStaleConfirmationNotApprovedByToss() throws Exception {
+		PaymentConfirmRequest expired = new PaymentConfirmRequest("payment-key", "order-id", 1000L, "confirm-key");
+		PaymentConfirmRequest missing = new PaymentConfirmRequest("payment-key-2", "order-id-2", 1000L, "key-2");
+		PaymentConfirmRequest inProgress = new PaymentConfirmRequest("payment-key-3", "order-id-3", 1000L, "key-3");
+
+		given(paymentTransactionService.findStaleConfirmations(any()))
+			.willReturn(List.of(expired, missing, inProgress));
+		given(tossPaymentsClient.findByOrderId("order-id")).willReturn(tossStatus("EXPIRED"));
+		given(tossPaymentsClient.findByOrderId("order-id-2"))
+			.willThrow(tossError(HttpStatus.NOT_FOUND, "NOT_FOUND_PAYMENT"));
+		given(tossPaymentsClient.findByOrderId("order-id-3")).willReturn(tossStatus("IN_PROGRESS"));
+
+		paymentService.recoverStaleConfirmations();
+
+		verify(paymentTransactionService).rejectConfirmation(expired);
+		verify(paymentTransactionService).rejectConfirmation(missing);
+		verify(paymentTransactionService, never()).rejectConfirmation(inProgress);
+		verify(paymentTransactionService, never()).complete(any(), any());
+	}
+
+	@Test
+	@DisplayName("복구 중 한 건이 실패해도 나머지 결제의 복구를 계속한다")
+	void continueRecoveryAfterFailure() throws Exception {
+		PaymentConfirmRequest failing = new PaymentConfirmRequest("payment-key-2", "order-id-2", 1000L, "key-2");
+		PaymentConfirmRequest request = new PaymentConfirmRequest("payment-key", "order-id", 1000L, "confirm-key");
+
+		given(paymentTransactionService.findStaleConfirmations(any())).willReturn(List.of(failing, request));
+		given(tossPaymentsClient.findByOrderId("order-id-2")).willThrow(new ResourceAccessException("timeout"));
+		given(tossPaymentsClient.findByOrderId("order-id"))
+			.willReturn(tossResponse("payment-key", "order-id", 1000L));
+
+		paymentService.recoverStaleConfirmations();
+
+		verify(paymentTransactionService).complete(request, APPROVED_AT);
+	}
+
+	@Test
+	@DisplayName("승인 후 굿즈 주문이 만료됐으면 토스 결제를 보상 취소한다")
+	void compensateWhenGoodsOrderExpired() throws Exception {
+		PaymentConfirmRequest request = new PaymentConfirmRequest("payment-key", "order-id", 1000L, "confirm-key");
+		PaymentCancelCommand command = cancelCommand();
+
+		given(paymentTransactionService.prepare(request)).willReturn(PaymentConfirmPreparation.required());
+		given(tossPaymentsClient.confirm(request)).willReturn(tossResponse("payment-key", "order-id", 1000L));
+		given(paymentTransactionService.complete(request, APPROVED_AT))
+			.willThrow(new BusinessException(ErrorCode.GOODS_ORDER_PAYMENT_EXPIRED));
+		given(paymentTransactionService.prepareCompensation(request, "결제 승인 후 주문 확정 실패"))
+			.willReturn(command);
+		given(tossPaymentsClient.cancel(command)).willReturn(cancelResponse("CANCELED", "DONE", 1000L));
+
+		assertThatThrownBy(() -> paymentService.confirm(request))
+			.isInstanceOf(BusinessException.class)
+			.extracting("errorCode")
+			.isEqualTo(ErrorCode.GOODS_ORDER_PAYMENT_EXPIRED);
+
+		verify(paymentTransactionService).completeCompensation(
+			command,
+			"transaction-key",
+			LocalDateTime.of(2026, 6, 16, 11, 0)
+		);
 	}
 
 	@Test
@@ -309,6 +429,20 @@ class PaymentServiceTest {
 				  "approvedAt": "2026-06-16T10:00:00+09:00"
 				}
 					""".formatted(paymentKey, orderId, amount));
+	}
+
+	private JsonNode tossStatus(String status) throws Exception {
+		return JsonMapper.builder().build().readTree("{\"status\": \"%s\"}".formatted(status));
+	}
+
+	private HttpClientErrorException tossError(HttpStatus status, String code) {
+		return HttpClientErrorException.create(
+			status,
+			status.getReasonPhrase(),
+			HttpHeaders.EMPTY,
+			"{\"code\": \"%s\"}".formatted(code).getBytes(StandardCharsets.UTF_8),
+			StandardCharsets.UTF_8
+		);
 	}
 
 	private PaymentCancelCommand cancelCommand() {

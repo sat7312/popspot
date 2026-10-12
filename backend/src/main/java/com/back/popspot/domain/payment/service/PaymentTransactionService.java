@@ -7,6 +7,8 @@ import java.util.Optional;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.back.popspot.domain.goods.entity.GoodsOrder;
+import com.back.popspot.domain.goods.entity.GoodsOrderStatus;
 import com.back.popspot.domain.payment.dto.PaymentCancelCommand;
 import com.back.popspot.domain.payment.dto.PaymentCancelPreparation;
 import com.back.popspot.domain.payment.dto.PaymentCancelRequest;
@@ -31,6 +33,10 @@ import lombok.RequiredArgsConstructor;
 @Service
 @RequiredArgsConstructor
 public class PaymentTransactionService {
+	private static final List<PaymentStatus> CANCELABLE_STATUSES = List.of(
+		PaymentStatus.PAID,
+		PaymentStatus.CANCEL_FAILED
+	);
 
 	private final PaymentRepository paymentRepository;
 	private final PaymentRefundRepository paymentRefundRepository;
@@ -55,7 +61,7 @@ public class PaymentTransactionService {
 
 		// 3. 상태값 READY 검증
 		if (payment.isReady()) {
-			validateReservationPayment(payment);
+			validatePayableTarget(payment);
 
 			// READY면 CONFIRMING으로 상태 변환
 			int updated = paymentRepository.beginConfirmationIfReady(
@@ -94,10 +100,38 @@ public class PaymentTransactionService {
 			return PaymentConfirmResponse.from(payment);
 		}
 
-		validateReservationPayment(payment);
+		validatePayableTarget(payment);
 		payment.complete(request.paymentKey(), approvedAt);
 		deleteReservationWaitlist(payment);
 		return PaymentConfirmResponse.from(payment);
+	}
+
+	// 토스가 명확히 거절한 승인 요청을 다시 승인 가능한 READY 상태로 복구
+	@Transactional
+	public void rejectConfirmation(PaymentConfirmRequest request) {
+		paymentRepository.revertConfirmationIfConfirming(
+			request.orderId(),
+			request.paymentKey(),
+			PaymentStatus.CONFIRMING,
+			PaymentStatus.READY
+		);
+	}
+
+	// 승인 결과가 확정되지 않은 채 남은 결제의 복구 대상을 조회
+	@Transactional(readOnly = true)
+	public List<PaymentConfirmRequest> findStaleConfirmations(LocalDateTime startedBefore) {
+		return paymentRepository.findTop20ByStatusAndConfirmStartedAtBeforeOrderByIdAsc(
+				PaymentStatus.CONFIRMING,
+				startedBefore
+			)
+			.stream()
+			.map(payment -> new PaymentConfirmRequest(
+				payment.getPaymentKey(),
+				payment.getOrderId(),
+				payment.getAmount(),
+				payment.getConfirmIdempotencyKey()
+			))
+			.toList();
 	}
 
 	// 이미 시작된 결제 승인 요청의 처리 방향을 결정
@@ -228,6 +262,17 @@ public class PaymentTransactionService {
 			});
 		validateCancelable(payment);
 
+		// 동시 취소 요청 중 하나만 CANCELING 상태를 선점
+		int updated = paymentRepository.beginCancelIfCancelable(
+			paymentId,
+			PaymentStatus.CANCELING,
+			CANCELABLE_STATUSES
+		);
+		if (updated == 0) {
+			throw new BusinessException(ErrorCode.PAYMENT_CANCEL_ALREADY_REQUESTED);
+		}
+		payment.beginCancel();
+
 		PaymentRefund refund = PaymentRefund.request(
 			payment,
 			payment.getUser(),
@@ -236,7 +281,6 @@ public class PaymentTransactionService {
 			request.idempotencyKey()
 		);
 		paymentRefundRepository.save(refund);
-		payment.beginCancel();
 
 		return PaymentCancelPreparation.required(toCommand(payment, request));
 	}
@@ -371,7 +415,7 @@ public class PaymentTransactionService {
 			throw new BusinessException(ErrorCode.PAYMENT_CONFIRM_NOT_ALLOWED_STATUS);
 		}
 		if (payment.isReady()) {
-			validateReservationPayment(payment);
+			validatePayableTarget(payment);
 		}
 	}
 
@@ -391,6 +435,28 @@ public class PaymentTransactionService {
 	private void validatePaymentKey(Payment payment, String requestPaymentKey) {
 		if (!requestPaymentKey.equals(payment.getPaymentKey())) {
 			throw new BusinessException(ErrorCode.PAYMENT_KEY_MISMATCH);
+		}
+	}
+
+	// 결제 대상인 예약 또는 굿즈 주문이 결제 가능한지 검증
+	private void validatePayableTarget(Payment payment) {
+		validateReservationPayment(payment);
+		validateGoodsOrderPayment(payment);
+	}
+
+	// 굿즈 주문 결제의 주문 상태와 결제 만료 시간을 검증
+	private void validateGoodsOrderPayment(Payment payment) {
+		GoodsOrder goodsOrder = payment.getGoodsOrder();
+		if (goodsOrder == null) {
+			return;
+		}
+
+		if (goodsOrder.getStatus() != GoodsOrderStatus.PENDING) {
+			throw new BusinessException(ErrorCode.GOODS_ORDER_PAYMENT_NOT_ALLOWED_STATUS);
+		}
+
+		if (goodsOrder.isExpired(LocalDateTime.now())) {
+			throw new BusinessException(ErrorCode.GOODS_ORDER_PAYMENT_EXPIRED);
 		}
 	}
 

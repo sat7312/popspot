@@ -2,6 +2,7 @@ package com.back.popspot.domain.payment.repository;
 
 import java.time.LocalDateTime;
 import java.util.Collection;
+import java.util.List;
 import java.util.Optional;
 
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -68,6 +69,46 @@ public interface PaymentRepository extends JpaRepository<Payment, Long> {
 		@Param("confirmStartedAt") LocalDateTime confirmStartedAt,
 		@Param("readyStatus") PaymentStatus readyStatus,
 		@Param("confirmingStatus") PaymentStatus confirmingStatus
+	);
+
+	// 승인이 거절된 CONFIRMING 결제를 다시 승인 가능한 READY 상태로 조건부 복구
+	@Modifying(clearAutomatically = true, flushAutomatically = true)
+	@Query("""
+		update Payment p
+		set p.status = :readyStatus,
+			p.paymentKey = null,
+			p.confirmIdempotencyKey = null,
+			p.confirmStartedAt = null
+		where p.orderId = :orderId
+			and p.status = :confirmingStatus
+			and p.paymentKey = :paymentKey
+		""")
+	int revertConfirmationIfConfirming(
+		@Param("orderId") String orderId,
+		@Param("paymentKey") String paymentKey,
+		@Param("confirmingStatus") PaymentStatus confirmingStatus,
+		@Param("readyStatus") PaymentStatus readyStatus
+	);
+
+	// 승인 진행 상태로 오래 남은 결제를 조회
+	List<Payment> findTop20ByStatusAndConfirmStartedAtBeforeOrderByIdAsc(
+		PaymentStatus status,
+		LocalDateTime confirmStartedAt
+	);
+
+	// 취소 가능한 결제를 취소 진행 상태로 조건부 변경
+	// 동시 취소 요청 중 하나만 상태를 선점한다.
+	@Modifying
+	@Query("""
+		update Payment p
+		set p.status = :cancelingStatus
+		where p.id = :paymentId
+			and p.status in :cancelableStatuses
+		""")
+	int beginCancelIfCancelable(
+		@Param("paymentId") Long paymentId,
+		@Param("cancelingStatus") PaymentStatus cancelingStatus,
+		@Param("cancelableStatuses") Collection<PaymentStatus> cancelableStatuses
 	);
 
 	// 굿즈 주문에 연결된 결제 조회 (환불 오케스트레이션 시 사용)
