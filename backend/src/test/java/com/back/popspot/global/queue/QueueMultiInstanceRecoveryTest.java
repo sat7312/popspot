@@ -88,7 +88,8 @@ import tools.jackson.databind.ObjectMapper;
         "waiting-queue.proceed-ttl-seconds=60",
         "waiting-queue.poll-interval-seconds=1",
         "waiting-queue.queue-ttl-buffer-seconds=300",
-        "queue-recovery.max-attempts=20",
+        // poll-interval=0이라 횟수 제한은 수 ms 만에 소진된다. 락 대기는 retry-deadline(10s)으로만 끊는다.
+        "queue-recovery.max-attempts=1000000",
         "queue-recovery.poll-interval-seconds=0",
         "queue-recovery.lock-at-most-for-seconds=3",
         "queue-recovery.retry-deadline-seconds=10",
