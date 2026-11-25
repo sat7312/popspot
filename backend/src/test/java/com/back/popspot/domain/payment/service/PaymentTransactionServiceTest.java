@@ -90,9 +90,8 @@ class PaymentTransactionServiceTest {
 		Payment readyPayment = readyPayment();
 		Payment confirmingPayment = confirmingPayment("payment-key", "confirm-key");
 		PaymentConfirmRequest request = request(1000L);
-		given(paymentRepository.findByOrderId("order-id"))
-			.willReturn(Optional.of(readyPayment))
-			.willReturn(Optional.of(confirmingPayment));
+		given(paymentRepository.findByOrderId("order-id")).willReturn(Optional.of(readyPayment));
+		given(paymentRepository.findByOrderIdWithSharedLock("order-id")).willReturn(Optional.of(confirmingPayment));
 		given(paymentRepository.beginConfirmationIfReady(
 			eq("order-id"),
 			eq(1000L),
