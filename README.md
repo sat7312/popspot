@@ -45,9 +45,7 @@
 
 ## 시스템 아키텍처
 
-<img width="955" height="646" alt="Image" src="https://github.com/user-attachments/assets/72642fa3-c7ab-4fa2-9760-dcc5c29a560b" />
-
-<!-- TODO: 발표자료의 '프로젝트 시스템 구조' 다이어그램을 docs/architecture.png 로 저장해 커밋 -->
+<img width="955" height="646" alt="PopSpot 시스템 아키텍처" src="https://github.com/user-attachments/assets/72642fa3-c7ab-4fa2-9760-dcc5c29a560b" />
 
 User → Frontend(Next.js) → Backend(Spring Boot) 구조이며, 데이터 계층은 MySQL·Redis·S3, 외부 연동은 Google OAuth·Toss Payments를 사용합니다. 인프라는 Terraform으로 AWS(EC2/RDS/S3)를 프로비저닝하고, GitHub Actions → GHCR → EC2 Blue-Green으로 배포합니다.
 
@@ -57,7 +55,7 @@ User → Frontend(Next.js) → Backend(Spring Boot) 구조이며, 데이터 계�
 
 | 이름 | 담당 |
 |------|------|
-| 김지오 | <!-- TODO: 역할 기입 --> |
+| 김지오 | 대기열 진입·복구·정리 스케줄러, 대기열 CircuitBreaker 복구, 주최자 굿즈 API |
 | 강경서 | OAuth 인증, 팝업 주최자 API, Redis 단일 카운터·CircuitBreaker |
 | 정종욱 | 굿즈 주문·환불 API, 재고 동시성, EC2 Blue/Green·GitHub Actions 배포 |
 | 김동호 | 예약 API·동시성, 취소표 재오픈 정책, Redis 정원 차감, 대기열 설계·최적화 |
@@ -98,9 +96,23 @@ CircuitBreaker로 Redis 장애 확산 방지. 대기열은 서버 재기동 시 
 
 ## 테스트 & 배포
 
-- **테스트** — JUnit + Testcontainers 단위 테스트, k6 부하·정합성 테스트 (`k6/`)
+- **테스트** — JUnit 5 + Mockito 단위 테스트(결제·쿠폰 등 도메인 서비스), Testcontainers 통합 테스트(대기열 복구), k6 부하 테스트(대기열·예약, `k6/`)
 - **CI/CD** — GitHub Actions: 자동 테스트 → Docker 빌드 → GHCR → EC2 Blue-Green 배포
 - **모니터링** — Spring Actuator → Prometheus → Grafana
+
+---
+
+## 프로젝트 종료 후 개인 보강
+
+원본 팀 저장소([prgrms-be-devcourse/NBE9-11-final-Team07](https://github.com/prgrms-be-devcourse/NBE9-11-final-Team07))에서 프로젝트를 마친 뒤, 이 저장소에서 결제 도메인 정합성을 추가로 보강했습니다. 아래 내용은 원본 팀 저장소에는 없습니다.
+
+| 시기 | 문제 | 해결 |
+|------|------|------|
+| 2026.10 | 같은 결제에 서로 다른 멱등키로 취소 요청이 동시에 들어오면 환불 INSERT와 결제 UPDATE가 경합해 데드락(500)이 나고, PG 취소가 중복 호출될 수 있음 | `PAID`/`CANCEL_FAILED → CANCELING`을 조건부 UPDATE로 선점하고, 선점에 실패한 요청은 `PAYMENT_CANCEL_ALREADY_REQUESTED`로 거부 |
+| 2026.10 | `READY → CONFIRMING` 전환 후 토스 승인이 실패하면 결제가 `CONFIRMING`에 고정돼 재시도가 모두 409로 막힘 | 명확한 거절(4xx)은 `READY`로 되돌리고, 타임아웃처럼 결과가 불확실한 결제는 스케줄러가 토스 결제 조회로 실제 상태를 확인해 복구 |
+| 2026.10 | 이미 만료돼 재고가 반환된 굿즈 주문도 결제 승인되어 `PAID`로 확정될 수 있음 | 승인 준비·완료 시점에 굿즈 주문 상태와 만료 시각을 검증하고, 승인 후 확정할 수 없으면 보상 취소 |
+
+관련 변경은 [PR #1](https://github.com/sat7312/popspot/pull/1)에 있으며, 결제 서비스 단위 테스트(`PaymentServiceTest`, `PaymentTransactionServiceTest`)에 각 시나리오를 추가했습니다.
 
 ---
 

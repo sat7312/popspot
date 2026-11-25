@@ -58,3 +58,7 @@ backend/.env
 backend/src/main/java/com/back/popspot/loadtest/tokens.json
 
 k6/tokens.json
+
+### k6 (load test) ###
+k6/node_modules/
+k6/tokens/
