@@ -78,7 +78,10 @@ public class PaymentTransactionService {
 				return PaymentConfirmPreparation.required();
 			}
 
-			Payment refreshed = getPayment(request.orderId());
+			// 일반 조회는 트랜잭션 첫 조회 시점의 스냅샷(READY)을 다시 읽으므로
+			// 잠금 읽기로 먼저 전환한 요청이 커밋한 최신 상태를 확인한다.
+			Payment refreshed = paymentRepository.findByOrderIdWithSharedLock(request.orderId())
+				.orElseThrow(() -> new BusinessException(ErrorCode.PAYMENT_NOT_FOUND));
 			return handleAlreadyStartedConfirmation(refreshed, request);
 		}
 

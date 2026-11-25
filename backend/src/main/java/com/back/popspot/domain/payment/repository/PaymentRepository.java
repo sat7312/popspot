@@ -6,6 +6,7 @@ import java.util.List;
 import java.util.Optional;
 
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -13,6 +14,8 @@ import org.springframework.data.repository.query.Param;
 import com.back.popspot.domain.payment.entity.Payment;
 import com.back.popspot.domain.payment.entity.PaymentStatus;
 import com.back.popspot.domain.payment.entity.PaymentType;
+
+import jakarta.persistence.LockModeType;
 
 public interface PaymentRepository extends JpaRepository<Payment, Long> {
 
@@ -35,6 +38,12 @@ public interface PaymentRepository extends JpaRepository<Payment, Long> {
 
 	// 주문 번호로 결제를 조회
 	Optional<Payment> findByOrderId(String orderId);
+
+	// 주문 번호로 결제를 잠금 읽기로 조회
+	// REPEATABLE READ에서도 트랜잭션 스냅샷이 아닌 최신 커밋 상태를 읽는다.
+	@Lock(LockModeType.PESSIMISTIC_READ)
+	@Query("select p from Payment p where p.orderId = :orderId")
+	Optional<Payment> findByOrderIdWithSharedLock(@Param("orderId") String orderId);
 
 	Optional<Payment> findFirstByReservationIdAndPaymentTypeAndStatusInOrderByIdDesc(
 		Long reservationId,
