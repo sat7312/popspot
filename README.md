@@ -63,6 +63,64 @@ User → Frontend(Next.js) → Backend(Spring Boot) 구조이며, 데이터 계�
 
 ---
 
+## 담당: 결제 (정준용)
+
+토스페이먼츠 승인·취소를 연동하고, 동시 요청·PG 응답 지연·스케줄러 다중 실행 속에서도 결제 상태와 예약·굿즈 주문이 어긋나지 않게 했습니다.
+
+```text
+승인   READY -> CONFIRMING -> PAID
+       CONFIRMING -> READY                  (토스가 명확히 거절, 4xx)
+보상   CONFIRMING -> COMPENSATING -> CANCELED  (승인됐지만 예약·주문을 확정할 수 없음)
+       COMPENSATING -> COMPENSATION_FAILED -> COMPENSATING  (60초마다 재시도)
+취소   PAID -> CANCELING -> CANCELED
+       CANCELING -> CANCEL_FAILED -> CANCELING  (같은 멱등키로 재시도)
+```
+
+### 정합성 설계
+
+| 위험 | 대응 |
+|------|------|
+| 같은 주문의 승인 요청이 동시에 들어와 토스 승인을 중복 호출 | `READY → CONFIRMING`을 조건부 UPDATE(`beginConfirmationIfReady`)로 선점. 진 요청은 `FOR SHARE`로 최신 상태를 다시 읽어 409(처리 중)로 응답 |
+| 서로 다른 멱등키의 동시 취소로 데드락·PG 중복 취소 | `PAID`/`CANCEL_FAILED → CANCELING`을 조건부 UPDATE(`beginCancelIfCancelable`)로 선점. 진 요청은 `PAYMENT_CANCEL_ALREADY_REQUESTED`로 거부 |
+| 한 예약·굿즈 주문에 활성 결제가 여러 건 생성 | `uk_payment_active_reservation`, `uk_payment_active_goods_order` 유니크 제약. 취소 완료 시 활성 키를 비워 재결제 허용 |
+| 네트워크 재시도로 같은 요청이 반복 | 결제 생성·승인·취소·보상 취소에 멱등성 키를 쓰고, 토스 취소 재시도도 같은 키로 호출 |
+| 승인 결과가 불확실한 채로 `CONFIRMING`에 고정 | 90초가 지난 결제를 스케줄러가 토스 결제 조회로 확인해 `PAID`로 확정하거나 `READY`로 되돌림 |
+| 승인 완료 처리 중 오래된 스냅샷으로 상태를 덮어씀(lost update) | `complete()`에서 결제를 `FOR UPDATE`로 조회해 같은 결제의 완료 처리를 직렬화 |
+| 토스가 응답하지 않아 호출 스레드(스케줄러 포함)가 무기한 대기 | 연결 5초, 응답 대기 60초 타임아웃. 60초는 토스 권장값이며 복구 기준 90초보다 짧음 |
+
+### 스케줄러 다중 인스턴스 안전성
+
+`PaymentCompensationScheduler`는 분산 락 없이 60초마다 세 작업을 실행합니다. 작업마다 행 단위로 직렬화되는지 통합 테스트로 확인했고, 그래서 ShedLock을 걸지 않았습니다.
+
+| 작업 | 직렬화 방식 |
+|------|------|
+| 보상 취소 재시도 | 실패한 환불을 `FOR UPDATE`로 조회하고 `FAILED → REQUESTED`로 바꿔, 다른 인스턴스는 같은 건을 집지 못함 |
+| 일반 취소 재시도 | 위와 같음 |
+| 승인 복구 | 되돌림은 조건부 UPDATE로 한 번만 적용. 확정은 `complete()`의 `FOR UPDATE`로 직렬화 |
+
+### 코드 위치
+
+| 파일 | 역할 |
+|------|------|
+| `PaymentService` | 토스 호출과 트랜잭션 경계 조율, 승인 복구·보상 취소 흐름 |
+| `PaymentTransactionService` | 상태 선점·검증·완료 처리 (DB 트랜잭션 단위) |
+| `PaymentRepository` | 조건부 UPDATE, 잠금 읽기 쿼리 |
+| `PaymentCompensationScheduler` | 보상 취소·일반 취소 재시도, 승인 복구 |
+| `TossPaymentsClient`, `TossPaymentsConfig` | 토스 API 호출, 타임아웃 설정 |
+
+### 테스트
+
+- 단위 테스트: `PaymentServiceTest` 18개, `PaymentTransactionServiceTest` 24개, `PaymentControllerTest` 4개, `TossPaymentsConfigTest` 3개
+- 통합 테스트(Testcontainers MySQL·Redis): `PaymentConfirmConcurrencyTest` 1개, `PaymentCancelConcurrencyTest` 2개, `PaymentSchedulerConcurrencyTest` 4개
+  - 실제 동시 요청으로 데드락·PG 중복 호출·lost update가 없는지 확인합니다. 통합 테스트로 찾은 결함 2건(동시 승인 에러 코드, 승인 복구 lost update)은 수정 전 코드에서 실패하는 것을 확인한 뒤 고쳤습니다.
+
+```bash
+cd backend
+./gradlew test --tests "com.back.popspot.domain.payment.*"
+```
+
+---
+
 ## 주요 기능
 
 - **회차별 사전 예약** — 방문 가능한 시간과 잔여 정원을 확인하고 원하는 회차를 예약
@@ -90,13 +148,13 @@ Redis Sorted Set으로 진입 순서(score)를 관리하고, 허용된 사용자
 CircuitBreaker로 Redis 장애 확산 방지. 대기열은 서버 재기동 시 자동 rebuild(ShedLock 단일 인스턴스 + 완료 전 enqueue 503 차단), 정원은 DB 확정 예약 기준 수동 복구.
 
 ### 결제-예약 정합성
-`READY → CONFIRMING → PAID` 상태 전이와 보상 취소, 멱등성 키 검증으로 중복 승인 및 결제-예약 불일치를 방지합니다.
+`READY → CONFIRMING → PAID` 상태 전이와 보상 취소, 멱등성 키 검증으로 중복 승인 및 결제-예약 불일치를 방지합니다. 자세한 설계는 [담당: 결제](#담당-결제-정준용)에 정리했습니다.
 
 ---
 
 ## 테스트 & 배포
 
-- **테스트** — JUnit 5 + Mockito 단위 테스트(결제·쿠폰 등 도메인 서비스), Testcontainers 통합 테스트(대기열 복구), k6 부하 테스트(대기열·예약, `k6/`)
+- **테스트** — JUnit 5 + Mockito 단위 테스트(결제·쿠폰 등 도메인 서비스), Testcontainers 통합 테스트(대기열 복구, 결제 동시 승인·취소·스케줄러 다중 실행), k6 부하 테스트(대기열·예약, `k6/`)
 - **CI/CD** — GitHub Actions: 자동 테스트 → Docker 빌드 → GHCR → EC2 Blue-Green 배포
 - **모니터링** — Spring Actuator → Prometheus → Grafana
 
@@ -111,8 +169,16 @@ CircuitBreaker로 Redis 장애 확산 방지. 대기열은 서버 재기동 시 
 | 2026.10 | 같은 결제에 서로 다른 멱등키로 취소 요청이 동시에 들어오면 환불 INSERT와 결제 UPDATE가 경합해 데드락(500)이 나고, PG 취소가 중복 호출될 수 있음 | `PAID`/`CANCEL_FAILED → CANCELING`을 조건부 UPDATE로 선점하고, 선점에 실패한 요청은 `PAYMENT_CANCEL_ALREADY_REQUESTED`로 거부 |
 | 2026.10 | `READY → CONFIRMING` 전환 후 토스 승인이 실패하면 결제가 `CONFIRMING`에 고정돼 재시도가 모두 409로 막힘 | 명확한 거절(4xx)은 `READY`로 되돌리고, 타임아웃처럼 결과가 불확실한 결제는 스케줄러가 토스 결제 조회로 실제 상태를 확인해 복구 |
 | 2026.10 | 이미 만료돼 재고가 반환된 굿즈 주문도 결제 승인되어 `PAID`로 확정될 수 있음 | 승인 준비·완료 시점에 굿즈 주문 상태와 만료 시각을 검증하고, 승인 후 확정할 수 없으면 보상 취소 |
+| 2026.11 | 위 동시성 수정이 Mockito 단위 테스트로만 검증됨. 실제 MySQL에서 돌려 보니, 동시 승인에서 진 요청이 REPEATABLE READ 스냅샷의 `READY`를 읽어 409 대신 400을 응답 | Testcontainers 동시 승인·취소 통합 테스트 추가. 선점에 진 요청은 `FOR SHARE`로 최신 상태를 다시 읽도록 수정 |
+| 2026.11 | 승인 복구 스케줄러가 두 인스턴스에서 같은 결제를 DONE으로 복구하는 사이 사용자 취소가 커밋되면, 늦은 쪽이 스냅샷의 `CONFIRMING`을 보고 `CANCELING`을 `PAID`로 덮어씀(lost update) | `complete()`에서 결제를 `FOR UPDATE`로 조회해 직렬화. 수정 전 코드에서 실패하고 수정 후 통과하는 회귀 테스트 추가 |
+| 2026.11 | 토스 API 호출에 타임아웃이 없어 응답이 없으면 스케줄러 스레드(기본 1개)가 멈추고, 같은 스레드를 쓰는 대기열 스케줄러도 함께 멈춤 | 토스 전용 클라이언트에 연결 5초·응답 대기 60초 타임아웃 지정. 타임아웃 시 기존 복구 경로(승인 복구, 취소 재시도)로 처리 |
 
-관련 변경은 [PR #1](https://github.com/sat7312/popspot/pull/1)에 있으며, 결제 서비스 단위 테스트(`PaymentServiceTest`, `PaymentTransactionServiceTest`)에 각 시나리오를 추가했습니다.
+관련 변경은 아래 PR에 있습니다.
+
+- [PR #1](https://github.com/sat7312/popspot/pull/1) — 동시 취소 데드락, `CONFIRMING` 고착, 만료 주문 승인 (단위 테스트)
+- [PR #2](https://github.com/sat7312/popspot/pull/2) — 동시 승인·취소 통합 테스트, 동시 승인 에러 코드 수정
+- [PR #3](https://github.com/sat7312/popspot/pull/3), [PR #4](https://github.com/sat7312/popspot/pull/4) — 스케줄러 다중 인스턴스 통합 테스트, 승인 복구 lost update 수정과 회귀 테스트
+- [PR #5](https://github.com/sat7312/popspot/pull/5) — 토스 API 타임아웃
 
 ---
 
