@@ -17,6 +17,7 @@ import java.util.Optional;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -447,10 +448,21 @@ class PaymentTransactionServiceTest {
 		Payment payment = paidPayment();
 		payment.failCancel();
 		PaymentRefund failedRefund = refund(payment, PaymentRefundStatus.FAILED);
-		given(paymentRefundRepository.findTop20ByStatusOrderByIdAsc(PaymentRefundStatus.FAILED))
+		given(paymentRefundRepository.findTop20ByStatusAndCreatedAtAfterOrderByIdAsc(
+			eq(PaymentRefundStatus.FAILED), any(LocalDateTime.class)))
 			.willReturn(List.of(failedRefund));
 
+		LocalDateTime before = LocalDateTime.now();
 		List<PaymentCancelCommand> commands = paymentTransactionService.prepareFailedCancels();
+		LocalDateTime after = LocalDateTime.now();
+
+		// 재시도 기간이 지난 환불은 조회 단계에서 제외한다.
+		ArgumentCaptor<LocalDateTime> createdAfter = ArgumentCaptor.forClass(LocalDateTime.class);
+		verify(paymentRefundRepository).findTop20ByStatusAndCreatedAtAfterOrderByIdAsc(
+			eq(PaymentRefundStatus.FAILED), createdAfter.capture());
+		assertThat(createdAfter.getValue())
+			.isBetween(before.minusHours(PaymentTransactionService.RETRY_WINDOW_HOURS),
+				after.minusHours(PaymentTransactionService.RETRY_WINDOW_HOURS));
 
 		assertThat(commands).hasSize(1);
 		assertThat(commands.get(0).idempotencyKey()).isEqualTo("cancel-key");

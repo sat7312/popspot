@@ -1,5 +1,6 @@
 package com.back.popspot.domain.payment.repository;
 
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
 
@@ -12,9 +13,12 @@ import com.back.popspot.domain.payment.entity.PaymentRefundStatus;
 import jakarta.persistence.LockModeType;
 
 public interface PaymentRefundRepository extends JpaRepository<PaymentRefund, Long> {
-	// 특정 상태의 환불 재처리 대상을 조회
+	// 기준 시각 이후 생성된 특정 상태의 환불 재처리 대상을 조회
 	@Lock(LockModeType.PESSIMISTIC_WRITE)
-	List<PaymentRefund> findTop20ByStatusOrderByIdAsc(PaymentRefundStatus status);
+	List<PaymentRefund> findTop20ByStatusAndCreatedAtAfterOrderByIdAsc(
+		PaymentRefundStatus status,
+		LocalDateTime createdAfter
+	);
 
 	// 멱등성 키로 환불 요청을 조회
 	Optional<PaymentRefund> findByIdempotencyKey(String idempotencyKey);

@@ -37,6 +37,10 @@ public class PaymentTransactionService {
 		PaymentStatus.PAID,
 		PaymentStatus.CANCEL_FAILED
 	);
+	// 실패한 환불은 첫 요청 후 이 기간까지만 스케줄러가 재시도한다.
+	// 같은 멱등키로 재시도하므로 토스 멱등키 유효기간(15일)보다 짧아야 하고,
+	// 이 기간이 지나도 실패하면 일시적 장애가 아니라고 보고 수동 처리 상태로 남긴다.
+	static final long RETRY_WINDOW_HOURS = 24L;
 
 	private final PaymentRepository paymentRepository;
 	private final PaymentRefundRepository paymentRefundRepository;
@@ -216,7 +220,7 @@ public class PaymentTransactionService {
 	// 실패한 보상 취소 재시도 명령 목록을 준비
 	@Transactional
 	public List<PaymentCancelCommand> prepareFailedCompensations() {
-		return paymentRefundRepository.findTop20ByStatusOrderByIdAsc(PaymentRefundStatus.FAILED)
+		return findRetryableFailedRefunds()
 			.stream()
 			.filter(refund -> refund.getPayment().getStatus() == PaymentStatus.COMPENSATION_FAILED)
 			.map(refund -> {
@@ -326,7 +330,7 @@ public class PaymentTransactionService {
 	// 실패한 일반 취소 재시도 명령 목록을 준비
 	@Transactional
 	public List<PaymentCancelCommand> prepareFailedCancels() {
-		return paymentRefundRepository.findTop20ByStatusOrderByIdAsc(PaymentRefundStatus.FAILED)
+		return findRetryableFailedRefunds()
 			.stream()
 			.filter(refund -> refund.getPayment().getStatus() == PaymentStatus.CANCEL_FAILED)
 			.map(refund -> {
@@ -343,6 +347,14 @@ public class PaymentTransactionService {
 				);
 			})
 			.toList();
+	}
+
+	// 재시도 기간 안에 있는 실패 환불을 잠금 조회
+	private List<PaymentRefund> findRetryableFailedRefunds() {
+		return paymentRefundRepository.findTop20ByStatusAndCreatedAtAfterOrderByIdAsc(
+			PaymentRefundStatus.FAILED,
+			LocalDateTime.now().minusHours(RETRY_WINDOW_HOURS)
+		);
 	}
 
 	// 결제 ID로 결제를 조회
