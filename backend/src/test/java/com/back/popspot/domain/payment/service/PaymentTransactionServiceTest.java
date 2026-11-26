@@ -150,7 +150,7 @@ class PaymentTransactionServiceTest {
 		Reservation reservation = reservation(ReservationStatus.HELD, LocalDateTime.now().plusMinutes(5));
 		Payment payment = readyReservationPayment(reservation);
 		PaymentConfirmRequest request = request(1000L);
-		given(paymentRepository.findByOrderId("order-id")).willReturn(Optional.of(payment));
+		given(paymentRepository.findByOrderIdForUpdate("order-id")).willReturn(Optional.of(payment));
 
 		PaymentConfirmResponse response = paymentTransactionService.complete(request, APPROVED_AT);
 
@@ -191,7 +191,7 @@ class PaymentTransactionServiceTest {
 		Payment payment = readyPayment();
 		payment.complete("payment-key", APPROVED_AT);
 		PaymentConfirmRequest request = request(1000L);
-		given(paymentRepository.findByOrderId("order-id")).willReturn(Optional.of(payment));
+		given(paymentRepository.findByOrderIdForUpdate("order-id")).willReturn(Optional.of(payment));
 
 		PaymentConfirmResponse response = paymentTransactionService.complete(request, APPROVED_AT.plusSeconds(1));
 
@@ -218,7 +218,7 @@ class PaymentTransactionServiceTest {
 		Payment payment = readyReservationPayment(reservation);
 		payment.beginConfirmation();
 		PaymentConfirmRequest request = request(1000L);
-		given(paymentRepository.findByOrderId("order-id")).willReturn(Optional.of(payment));
+		given(paymentRepository.findByOrderIdForUpdate("order-id")).willReturn(Optional.of(payment));
 
 		assertBusinessException(
 			() -> paymentTransactionService.complete(request, APPROVED_AT),
@@ -370,7 +370,7 @@ class PaymentTransactionServiceTest {
 	void rejectGoodsOrderExpiredBeforeCompletion() {
 		Payment payment = readyGoodsOrderPayment(GoodsOrderStatus.PENDING, LocalDateTime.now().minusSeconds(1));
 		payment.beginConfirmation();
-		given(paymentRepository.findByOrderId("order-id")).willReturn(Optional.of(payment));
+		given(paymentRepository.findByOrderIdForUpdate("order-id")).willReturn(Optional.of(payment));
 
 		assertBusinessException(
 			() -> paymentTransactionService.complete(request(1000L), APPROVED_AT),

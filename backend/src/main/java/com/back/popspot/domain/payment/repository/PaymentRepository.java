@@ -45,6 +45,12 @@ public interface PaymentRepository extends JpaRepository<Payment, Long> {
 	@Query("select p from Payment p where p.orderId = :orderId")
 	Optional<Payment> findByOrderIdWithSharedLock(@Param("orderId") String orderId);
 
+	// 주문 번호로 결제를 쓰기 잠금으로 조회
+	// 같은 결제를 동시에 완료 처리하는 요청이 오래된 상태를 읽고 덮어쓰지 않도록 직렬화한다.
+	@Lock(LockModeType.PESSIMISTIC_WRITE)
+	@Query("select p from Payment p where p.orderId = :orderId")
+	Optional<Payment> findByOrderIdForUpdate(@Param("orderId") String orderId);
+
 	Optional<Payment> findFirstByReservationIdAndPaymentTypeAndStatusInOrderByIdDesc(
 		Long reservationId,
 		PaymentType paymentType,
