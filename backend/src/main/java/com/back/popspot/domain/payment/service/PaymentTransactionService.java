@@ -95,7 +95,10 @@ public class PaymentTransactionService {
 	// 토스 승인 성공 후 결제와 주문을 완료 처리
 	@Transactional
 	public PaymentConfirmResponse complete(PaymentConfirmRequest request, LocalDateTime approvedAt) {
-		Payment payment = getPayment(request.orderId());
+		// 복구 스케줄러가 여러 인스턴스에서 겹치면 같은 결제를 동시에 완료 처리할 수 있다.
+		// 일반 조회는 스냅샷의 CONFIRMING을 읽어, 그 사이 시작된 취소(CANCELING)를 PAID로 덮어쓴다.
+		Payment payment = paymentRepository.findByOrderIdForUpdate(request.orderId())
+			.orElseThrow(() -> new BusinessException(ErrorCode.PAYMENT_NOT_FOUND));
 		validatePayment(payment, request);
 
 		if (payment.isPaid()) {
