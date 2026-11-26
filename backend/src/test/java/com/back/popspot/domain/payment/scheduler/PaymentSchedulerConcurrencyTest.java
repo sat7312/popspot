@@ -251,7 +251,8 @@ class PaymentSchedulerConcurrencyTest extends ContainerIntegrationTestSupport {
 
 		doAnswer(invocation -> {
 			long startedAt = System.nanoTime();
-			List<PaymentRefund> locked = findFailedRefundsForUpdate(invocation.getArgument(0));
+			List<PaymentRefund> locked = findFailedRefundsForUpdate(
+				invocation.getArgument(0), invocation.getArgument(1));
 			String instance = INSTANCE.get();
 			if (instance != null) {
 				selectedCounts.put(instance, locked.size());
@@ -263,7 +264,8 @@ class PaymentSchedulerConcurrencyTest extends ContainerIntegrationTestSupport {
 				Thread.sleep(LOCK_HOLD_MILLIS);
 			}
 			return locked;
-		}).when(paymentRefundRepository).findTop20ByStatusOrderByIdAsc(any(PaymentRefundStatus.class));
+		}).when(paymentRefundRepository)
+			.findTop20ByStatusAndCreatedAtAfterOrderByIdAsc(any(PaymentRefundStatus.class), any(LocalDateTime.class));
 
 		CompletableFuture<Void> instanceA = runAs("A", retry);
 		instanceALocked.await(TIMEOUT_SECONDS, TimeUnit.SECONDS);
@@ -350,13 +352,14 @@ class PaymentSchedulerConcurrencyTest extends ContainerIntegrationTestSupport {
 	}
 
 	// 리포지토리가 인터페이스 프록시라 callRealMethod를 쓸 수 없어 같은 조회를 JPQL로 수행한다.
-	private List<PaymentRefund> findFailedRefundsForUpdate(PaymentRefundStatus status) {
+	private List<PaymentRefund> findFailedRefundsForUpdate(PaymentRefundStatus status, LocalDateTime createdAfter) {
 		return entityManager.createQuery("""
 				select r from PaymentRefund r
-				where r.status = :status
+				where r.status = :status and r.createdAt > :createdAfter
 				order by r.id asc
 				""", PaymentRefund.class)
 			.setParameter("status", status)
+			.setParameter("createdAfter", createdAfter)
 			.setLockMode(LockModeType.PESSIMISTIC_WRITE)
 			.setMaxResults(20)
 			.getResultList();
