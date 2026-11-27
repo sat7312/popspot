@@ -24,6 +24,7 @@ import com.back.popspot.domain.payment.repository.PaymentRefundRepository;
 import com.back.popspot.domain.payment.repository.PaymentRepository;
 import com.back.popspot.domain.reservation.entity.Reservation;
 import com.back.popspot.domain.reservation.entity.ReservationStatus;
+import com.back.popspot.domain.reservation.repository.ReservationRepository;
 import com.back.popspot.domain.reservation.service.ReservationWaitlistService;
 import com.back.popspot.global.exception.BusinessException;
 import com.back.popspot.global.exception.ErrorCode;
@@ -41,9 +42,14 @@ public class PaymentTransactionService {
 	// 같은 멱등키로 재시도하므로 토스 멱등키 유효기간(15일)보다 짧아야 하고,
 	// 이 기간이 지나도 실패하면 일시적 장애가 아니라고 보고 수동 처리 상태로 남긴다.
 	static final long RETRY_WINDOW_HOURS = 24L;
+	// 승인을 시작한 예약은 최소 이 시간 동안 점유를 보장한다.
+	// 토스 응답 대기 타임아웃(60초)보다 길고 승인 복구 기준(90초)과 같아서,
+	// 정상 승인 중에는 예약 만료 스케줄러가 자리를 풀지 않는다.
+	static final long CONFIRM_HOLD_SECONDS = 90L;
 
 	private final PaymentRepository paymentRepository;
 	private final PaymentRefundRepository paymentRefundRepository;
+	private final ReservationRepository reservationRepository;
 	private final ReservationWaitlistService reservationWaitlistService;
 
 	// 결제 승인 전 사전 검증과 승인 진행 상태 전환
@@ -79,6 +85,9 @@ public class PaymentTransactionService {
 			);
 
 			if (updated == 1) {
+				// 점유 마감은 승인 시작 시점에 판정한다.
+				// 토스 승인 중에 점유가 만료되면 결제 후 보상 취소(환불)로 이어지므로 점유를 연장한다.
+				extendReservationHold(payment);
 				return PaymentConfirmPreparation.required();
 			}
 
@@ -491,6 +500,25 @@ public class PaymentTransactionService {
 
 		LocalDateTime heldUntil = reservation.getHeldUntil();
 		if (heldUntil == null || !heldUntil.isAfter(LocalDateTime.now())) {
+			throw new BusinessException(ErrorCode.RESERVATION_PAYMENT_EXPIRED);
+		}
+	}
+
+	// 승인 중인 예약의 점유를 CONFIRM_HOLD_SECONDS 뒤까지 보장한다
+	private void extendReservationHold(Payment payment) {
+		Reservation reservation = payment.getReservation();
+		if (reservation == null) {
+			return;
+		}
+
+		LocalDateTime holdUntil = LocalDateTime.now().plusSeconds(CONFIRM_HOLD_SECONDS);
+		if (!reservation.getHeldUntil().isBefore(holdUntil)) {
+			return;
+		}
+
+		// 검증 직후 만료 스케줄러가 먼저 만료시켰다면 0행이다. 예외로 트랜잭션을 되돌려 결제를 READY로 둔다.
+		int extended = reservationRepository.extendHeldUntil(reservation.getId(), ReservationStatus.HELD, holdUntil);
+		if (extended == 0) {
 			throw new BusinessException(ErrorCode.RESERVATION_PAYMENT_EXPIRED);
 		}
 	}

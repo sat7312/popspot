@@ -41,6 +41,7 @@ import com.back.popspot.domain.payment.repository.PaymentRefundRepository;
 import com.back.popspot.domain.popupStore.entity.ReservationSlot;
 import com.back.popspot.domain.reservation.entity.Reservation;
 import com.back.popspot.domain.reservation.entity.ReservationStatus;
+import com.back.popspot.domain.reservation.repository.ReservationRepository;
 import com.back.popspot.domain.reservation.service.ReservationWaitlistService;
 import com.back.popspot.domain.user.entity.User;
 import com.back.popspot.global.exception.BusinessException;
@@ -56,6 +57,9 @@ class PaymentTransactionServiceTest {
 
 	@Mock
 	private PaymentRefundRepository paymentRefundRepository;
+
+	@Mock
+	private ReservationRepository reservationRepository;
 
 	@Mock
 	private ReservationWaitlistService reservationWaitlistService;
@@ -83,6 +87,65 @@ class PaymentTransactionServiceTest {
 
 		assertThat(result.confirmRequired()).isTrue();
 		assertThat(result.isCompleted()).isFalse();
+	}
+
+	@Test
+	@DisplayName("승인을 시작한 예약의 점유가 짧게 남았으면 승인 보장 시간까지 연장한다")
+	void extendShortReservationHoldWhenConfirmStarts() {
+		Reservation reservation = reservation(ReservationStatus.HELD, LocalDateTime.now().plusSeconds(10));
+		Payment payment = readyReservationPayment(reservation);
+		givenConfirmationStarted(payment, 1);
+		given(reservationRepository.extendHeldUntil(eq(1L), eq(ReservationStatus.HELD), any(LocalDateTime.class)))
+			.willReturn(1);
+		LocalDateTime before = LocalDateTime.now();
+
+		PaymentConfirmPreparation result = paymentTransactionService.prepare(request(1000L));
+
+		assertThat(result.confirmRequired()).isTrue();
+		ArgumentCaptor<LocalDateTime> heldUntil = ArgumentCaptor.forClass(LocalDateTime.class);
+		verify(reservationRepository).extendHeldUntil(eq(1L), eq(ReservationStatus.HELD), heldUntil.capture());
+		assertThat(heldUntil.getValue())
+			.isAfterOrEqualTo(before.plusSeconds(PaymentTransactionService.CONFIRM_HOLD_SECONDS));
+	}
+
+	@Test
+	@DisplayName("점유가 승인 보장 시간보다 넉넉히 남았으면 연장하지 않는다")
+	void keepLongReservationHoldWhenConfirmStarts() {
+		Reservation reservation = reservation(ReservationStatus.HELD, LocalDateTime.now().plusMinutes(5));
+		Payment payment = readyReservationPayment(reservation);
+		givenConfirmationStarted(payment, 1);
+
+		paymentTransactionService.prepare(request(1000L));
+
+		verify(reservationRepository, never()).extendHeldUntil(anyLong(), any(), any());
+	}
+
+	@Test
+	@DisplayName("검증 직후 예약이 만료돼 점유를 연장하지 못하면 만료 예외로 승인 시작을 되돌린다")
+	void rejectWhenReservationExpiredBeforeHoldExtension() {
+		Reservation reservation = reservation(ReservationStatus.HELD, LocalDateTime.now().plusSeconds(1));
+		Payment payment = readyReservationPayment(reservation);
+		givenConfirmationStarted(payment, 1);
+		given(reservationRepository.extendHeldUntil(eq(1L), eq(ReservationStatus.HELD), any(LocalDateTime.class)))
+			.willReturn(0);
+
+		assertBusinessException(
+			() -> paymentTransactionService.prepare(request(1000L)),
+			ErrorCode.RESERVATION_PAYMENT_EXPIRED
+		);
+	}
+
+	private void givenConfirmationStarted(Payment payment, int updated) {
+		given(paymentRepository.findByOrderId("order-id")).willReturn(Optional.of(payment));
+		given(paymentRepository.beginConfirmationIfReady(
+			eq("order-id"),
+			eq(1000L),
+			eq("payment-key"),
+			eq("confirm-key"),
+			any(LocalDateTime.class),
+			eq(PaymentStatus.READY),
+			eq(PaymentStatus.CONFIRMING)
+		)).willReturn(updated);
 	}
 
 	@Test

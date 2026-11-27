@@ -81,4 +81,19 @@ public interface ReservationRepository extends JpaRepository<Reservation, Long> 
 		@Param("expiredStatus") ReservationStatus expiredStatus,
 		@Param("now") LocalDateTime now
 	);
+
+	// HELD 상태 예약의 점유 만료 시각을 늦춘다 (이미 더 늦으면 바꾸지 않음)
+	@Modifying(flushAutomatically = true)
+	@Query("""
+		update Reservation reservation
+		set reservation.heldUntil = :heldUntil
+		where reservation.id = :reservationId
+		and reservation.status = :heldStatus
+		and reservation.heldUntil < :heldUntil
+		""")
+	int extendHeldUntil(
+		@Param("reservationId") Long reservationId,
+		@Param("heldStatus") ReservationStatus heldStatus,
+		@Param("heldUntil") LocalDateTime heldUntil
+	);
 }
