@@ -71,9 +71,9 @@ User → Frontend(Next.js) → Backend(Spring Boot) 구조이며, 데이터 계�
 승인   READY -> CONFIRMING -> PAID
        CONFIRMING -> READY                  (토스가 명확히 거절, 4xx)
 보상   CONFIRMING -> COMPENSATING -> CANCELED  (승인됐지만 예약·주문을 확정할 수 없음)
-       COMPENSATING -> COMPENSATION_FAILED -> COMPENSATING  (60초마다 재시도)
+       COMPENSATING -> COMPENSATION_FAILED -> COMPENSATING  (60초마다 재시도, 생성 후 24시간까지)
 취소   PAID -> CANCELING -> CANCELED
-       CANCELING -> CANCEL_FAILED -> CANCELING  (같은 멱등키로 재시도)
+       CANCELING -> CANCEL_FAILED -> CANCELING  (같은 멱등키로 재시도, 생성 후 24시간까지)
 ```
 
 ### 정합성 설계
@@ -87,6 +87,8 @@ User → Frontend(Next.js) → Backend(Spring Boot) 구조이며, 데이터 계�
 | 승인 결과가 불확실한 채로 `CONFIRMING`에 고정 | 90초가 지난 결제를 스케줄러가 토스 결제 조회로 확인해 `PAID`로 확정하거나 `READY`로 되돌림 |
 | 승인 완료 처리 중 오래된 스냅샷으로 상태를 덮어씀(lost update) | `complete()`에서 결제를 `FOR UPDATE`로 조회해 같은 결제의 완료 처리를 직렬화 |
 | 토스가 응답하지 않아 호출 스레드(스케줄러 포함)가 무기한 대기 | 연결 5초, 응답 대기 60초 타임아웃. 60초는 토스 권장값이며 복구 기준 90초보다 짧음 |
+| 토스가 계속 거절하는 환불을 끝없이 재시도 | 실패 환불은 생성 후 24시간까지만 재시도. 같은 멱등키로 재시도하므로 토스 멱등키 유효기간(15일)보다 짧게 잡음. 기간이 지난 건은 `COMPENSATION_FAILED`/`CANCEL_FAILED`로 남아 수동 처리 |
+| 토스 승인 중에 예약 점유(5분)가 만료돼 결제 후 환불됨 | 점유 마감은 승인 시작 시점에 판정. `READY → CONFIRMING` 선점과 같은 트랜잭션에서 점유를 최소 90초 뒤까지 연장(`extendHeldUntil`). 90초는 응답 대기 60초보다 길고 복구 기준과 같음 |
 
 ### 스케줄러 다중 인스턴스 안전성
 
@@ -105,14 +107,16 @@ User → Frontend(Next.js) → Backend(Spring Boot) 구조이며, 데이터 계�
 | `PaymentService` | 토스 호출과 트랜잭션 경계 조율, 승인 복구·보상 취소 흐름 |
 | `PaymentTransactionService` | 상태 선점·검증·완료 처리 (DB 트랜잭션 단위) |
 | `PaymentRepository` | 조건부 UPDATE, 잠금 읽기 쿼리 |
+| `ReservationRepository.extendHeldUntil` | 승인 시작 시 예약 점유 연장 (조건부 UPDATE) |
 | `PaymentCompensationScheduler` | 보상 취소·일반 취소 재시도, 승인 복구 |
 | `TossPaymentsClient`, `TossPaymentsConfig` | 토스 API 호출, 타임아웃 설정 |
 
 ### 테스트
 
-- 단위 테스트: `PaymentServiceTest` 18개, `PaymentTransactionServiceTest` 24개, `PaymentControllerTest` 4개, `TossPaymentsConfigTest` 3개
-- 통합 테스트(Testcontainers MySQL·Redis): `PaymentConfirmConcurrencyTest` 1개, `PaymentCancelConcurrencyTest` 2개, `PaymentSchedulerConcurrencyTest` 4개
+- 단위 테스트: `PaymentServiceTest` 18개, `PaymentTransactionServiceTest` 27개, `PaymentControllerTest` 4개, `TossPaymentsConfigTest` 3개
+- 통합 테스트(Testcontainers MySQL·Redis): `PaymentConfirmConcurrencyTest` 1개, `PaymentCancelConcurrencyTest` 2개, `PaymentSchedulerConcurrencyTest` 4개, `PaymentRetryWindowTest` 2개, `PaymentConfirmHoldExpirationTest` 3개
   - 실제 동시 요청으로 데드락·PG 중복 호출·lost update가 없는지 확인합니다. 통합 테스트로 찾은 결함 2건(동시 승인 에러 코드, 승인 복구 lost update)은 수정 전 코드에서 실패하는 것을 확인한 뒤 고쳤습니다.
+  - 재시도 기간 상한과 승인 중 점유 만료도 실제 DB에서 확인합니다. 승인 중 점유 만료 테스트는 수정 전 코드에서 실패하는 것을 확인했습니다.
 
 ```bash
 cd backend
@@ -172,6 +176,8 @@ CircuitBreaker로 Redis 장애 확산 방지. 대기열은 서버 재기동 시 
 | 2026.11 | 위 동시성 수정이 Mockito 단위 테스트로만 검증됨. 실제 MySQL에서 돌려 보니, 동시 승인에서 진 요청이 REPEATABLE READ 스냅샷의 `READY`를 읽어 409 대신 400을 응답 | Testcontainers 동시 승인·취소 통합 테스트 추가. 선점에 진 요청은 `FOR SHARE`로 최신 상태를 다시 읽도록 수정 |
 | 2026.11 | 승인 복구 스케줄러가 두 인스턴스에서 같은 결제를 DONE으로 복구하는 사이 사용자 취소가 커밋되면, 늦은 쪽이 스냅샷의 `CONFIRMING`을 보고 `CANCELING`을 `PAID`로 덮어씀(lost update) | `complete()`에서 결제를 `FOR UPDATE`로 조회해 직렬화. 수정 전 코드에서 실패하고 수정 후 통과하는 회귀 테스트 추가 |
 | 2026.11 | 토스 API 호출에 타임아웃이 없어 응답이 없으면 스케줄러 스레드(기본 1개)가 멈추고, 같은 스레드를 쓰는 대기열 스케줄러도 함께 멈춤 | 토스 전용 클라이언트에 연결 5초·응답 대기 60초 타임아웃 지정. 타임아웃 시 기존 복구 경로(승인 복구, 취소 재시도)로 처리 |
+| 2026.11 | 실패한 환불을 60초마다 상한 없이 재시도해, 계속 거절되는 건이 PG를 끝없이 호출하고 오래된 실패 건이 재시도 대상 20건을 차지할 수 있음 | 생성 후 24시간 안의 실패 환불만 재시도. 스키마 변경 없이 기존 `created_at`(첫 요청 시각)으로 판단 |
+| 2026.11 | 점유 마감 직전에 승인을 시작하면 토스 승인 도중 예약 만료 스케줄러가 예약을 만료시켜, 결제 후 보상 취소(환불)로 이어짐 | 승인 시작 시 점유를 최소 90초 뒤까지 연장. 연장 전에 이미 만료됐으면 토스를 호출하지 않고 거부. 수정 전 코드에서 실패하는 통합 테스트 추가 |
 
 관련 변경은 아래 PR에 있습니다.
 
@@ -179,6 +185,8 @@ CircuitBreaker로 Redis 장애 확산 방지. 대기열은 서버 재기동 시 
 - [PR #2](https://github.com/sat7312/popspot/pull/2) — 동시 승인·취소 통합 테스트, 동시 승인 에러 코드 수정
 - [PR #3](https://github.com/sat7312/popspot/pull/3), [PR #4](https://github.com/sat7312/popspot/pull/4) — 스케줄러 다중 인스턴스 통합 테스트, 승인 복구 lost update 수정과 회귀 테스트
 - [PR #5](https://github.com/sat7312/popspot/pull/5) — 토스 API 타임아웃
+- [PR #7](https://github.com/sat7312/popspot/pull/7) — 실패 환불 재시도 기간 상한(24시간)
+- [PR #8](https://github.com/sat7312/popspot/pull/8) — 결제 승인 중 예약 점유 만료 방지
 
 ---
 
