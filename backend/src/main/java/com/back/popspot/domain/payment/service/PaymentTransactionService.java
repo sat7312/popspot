@@ -327,12 +327,17 @@ public class PaymentTransactionService {
 	}
 
 	// 토스 취소 실패 시 환불 요청을 실패 처리
+	// 다른 멱등키 요청이 먼저 취소를 끝냈을 수 있으므로 결제 상태는 CANCELING일 때만 실패로 바꾼다.
 	@Transactional
 	public void failCancel(String idempotencyKey) {
 		PaymentRefund refund = getRefund(idempotencyKey);
 		if (refund.getStatus() == PaymentRefundStatus.REQUESTED) {
-			refund.getPayment().failCancel();
 			refund.fail();
+			paymentRepository.failCancelIfCanceling(
+				refund.getPayment().getId(),
+				PaymentStatus.CANCELING,
+				PaymentStatus.CANCEL_FAILED
+			);
 		}
 	}
 

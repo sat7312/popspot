@@ -501,8 +501,24 @@ class PaymentTransactionServiceTest {
 
 		paymentTransactionService.failCancel("cancel-key");
 
-		assertThat(payment.getStatus()).isEqualTo(PaymentStatus.CANCEL_FAILED);
+		// 결제 상태는 CANCELING일 때만 바뀌도록 조건부 UPDATE로 실패 처리한다.
+		verify(paymentRepository).failCancelIfCanceling(
+			payment.getId(), PaymentStatus.CANCELING, PaymentStatus.CANCEL_FAILED);
 		assertThat(refund.getStatus()).isEqualTo(PaymentRefundStatus.FAILED);
+	}
+
+	@Test
+	@DisplayName("이미 완료된 환불이면 결제 상태를 바꾸지 않는다")
+	void failCancelIgnoresCompletedRefund() {
+		Payment payment = paidPayment();
+		payment.cancel();
+		PaymentRefund refund = refund(payment, PaymentRefundStatus.DONE);
+		given(paymentRefundRepository.findByIdempotencyKey("cancel-key")).willReturn(Optional.of(refund));
+
+		paymentTransactionService.failCancel("cancel-key");
+
+		verify(paymentRepository, never()).failCancelIfCanceling(any(), any(), any());
+		assertThat(refund.getStatus()).isEqualTo(PaymentRefundStatus.DONE);
 	}
 
 	@Test
