@@ -109,6 +109,7 @@ User → Frontend(Next.js) → Backend(Spring Boot) 구조이며, 데이터 계�
 | `PaymentTransactionService` | 상태 선점·검증·완료 처리 (DB 트랜잭션 단위) |
 | `PaymentRepository` | 조건부 UPDATE, 잠금 읽기 쿼리 |
 | `ReservationRepository.extendHeldUntil` | 승인 시작 시 예약 점유 연장 (조건부 UPDATE) |
+| `PaymentRepository.failCancelIfCanceling` | 취소 실패를 `CANCELING`인 결제에만 반영 (조건부 UPDATE) |
 | `PaymentCompensationScheduler` | 보상 취소·일반 취소 재시도, 승인 복구 |
 | `TossPaymentsClient`, `TossPaymentsConfig` | 토스 API 호출, 타임아웃 설정 |
 
