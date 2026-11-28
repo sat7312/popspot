@@ -126,6 +126,21 @@ public interface PaymentRepository extends JpaRepository<Payment, Long> {
 		@Param("cancelableStatuses") Collection<PaymentStatus> cancelableStatuses
 	);
 
+	// 취소 진행 중인 결제만 취소 실패 상태로 조건부 변경
+	// 다른 환불 요청이 이미 취소를 끝낸 결제(CANCELED)를 실패 상태로 되돌리지 않는다.
+	@Modifying(clearAutomatically = true, flushAutomatically = true)
+	@Query("""
+		update Payment p
+		set p.status = :cancelFailedStatus
+		where p.id = :paymentId
+			and p.status = :cancelingStatus
+		""")
+	int failCancelIfCanceling(
+		@Param("paymentId") Long paymentId,
+		@Param("cancelingStatus") PaymentStatus cancelingStatus,
+		@Param("cancelFailedStatus") PaymentStatus cancelFailedStatus
+	);
+
 	// 굿즈 주문에 연결된 결제 조회 (환불 오케스트레이션 시 사용)
 	Optional<Payment> findByGoodsOrder_Id(Long goodsOrderId);
 
